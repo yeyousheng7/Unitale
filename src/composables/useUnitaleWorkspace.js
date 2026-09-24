@@ -1,12 +1,16 @@
-import { ref, onMounted, computed, watch } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useI18n } from '../i18n'
-import { initDB, saveAssetToDB, loadAssetFromDB, saveAssetsBatch, saveProjectRecord, loadProjectRecord, deleteAssetFromDB, listLegacyAssetRecords } from '../services/storage/indexedDb'
-import { referencedLegacyAssetKeys, auditAssetRecords } from '../services/storage/audit'
-import { createProjectSnapshot } from '../services/storage/snapshot'
+import { indexedDbAssetStore, openWorkspaceDB, saveWorkspaceProject, loadWorkspaceProject, removeWorkspaceScript, getActiveWorkspace, setActiveWorkspace, setActiveProjectId, storeRecentDirectory, loadRecentDirectory, DEFAULT_PROJECT_ID } from '../services/storage/workspaceDb'
+import { DirectoryProjectStore, ensureDirectoryPermission } from '../services/storage/directoryStore'
+import { referencedAssetIds, auditAssetRecords } from '../services/storage/audit'
+import { collectOrphanAssets } from '../services/storage/garbageCollect'
+import { ObjectUrlManager } from '../services/storage/objectUrls'
+import { createProjectSnapshot, createProjectSaveSnapshot } from '../services/storage/snapshot'
 import { storageKeys } from '../services/storage/keys'
-import { blobToBase64, base64ToBlob, extractMediaJsonFromFileStream } from '../services/project/media'
-import { createProjectExportBlob } from '../services/project/export'
+import { exportArchiveParts, exportArchiveToStream, importArchiveParts } from '../services/project/archive'
 import { ensureFFmpegLoaded, runFFmpegTask, getMp4Muxer } from '../services/audio/legacyAdapters'
+import { DecodedAudioCache, audioBufferBytes } from '../services/audio/decodedCache'
+import { makeWavHeader, frameRanges, WAV_MAX_DATA_BYTES, AUDIO_EXPORT_PART_SECONDS } from '../services/audio/wav'
 import { getAudioBlobFromUrl, getFileExtensionFromBlob, buildDialogueAudioFilter } from '../services/audio/processing'
 import { requestService } from '../services/api/client'
 
@@ -35,12 +39,28 @@ export function useUnitaleWorkspace() {
                   const isSystemEmotion = (name) => SYSTEM_EMOTIONS.some(e => e.name === name);
 
                   // IndexedDB access lives in the storage service.
-                  const saveProjectToDB = async () => {
-                      await initDB();
+                  const dirtyScriptIds = new Set();
+                  const deletedScriptIds = new Set();
+                  let collectOrphansAfterSave = false;
+                  const pendingAssetIds = new Set();
+                  let orphanSweepTimer = null;
+                  let saveQueue = Promise.resolve();
+                  const activeProjectId = ref(DEFAULT_PROJECT_ID);
+                  const storageBackend = ref('indexeddb');
+                  const directoryName = ref('');
+                  const directoryError = ref('');
+                  const lastStorageError = ref('');
+                  let activeAssetStore = indexedDbAssetStore;
+                  let directoryStore = null;
+                  let storageAccessBlocked = false;
+                  const saveProjectToDB = () => saveQueue = saveQueue.catch(() => {}).then(async () => {
+                      if (storageAccessBlocked) throw new Error('Project directory permission is required');
+                      await openWorkspaceDB();
 
                       syncCurrentScriptState(); // 确保当前状态同步到列表
-
-                      const projectData = createProjectSnapshot({
+                      dirtyScriptIds.add(currentScriptId.value);
+                      const changed = new Set(dirtyScriptIds);
+                      const projectData = createProjectSaveSnapshot({
                           characters: characters.value,
                           scriptList: scriptList.value,
                           currentScriptId: currentScriptId.value,
@@ -51,16 +71,40 @@ export function useUnitaleWorkspace() {
                               filters: filterLibrary.value,
                               emotions: emotionPresets.value
                           }
-                      });
-
-                      return saveProjectRecord(projectData);
-                  };
+                      }, changed);
+                      if (directoryStore) {
+                          await directoryStore.saveProject(projectData, changed);
+                      } else {
+                          await saveWorkspaceProject(projectData, changed, activeProjectId.value);
+                          for (const id of deletedScriptIds) await removeWorkspaceScript(id, activeProjectId.value);
+                      }
+                      for (const id of changed) dirtyScriptIds.delete(id);
+                      deletedScriptIds.clear();
+                      if (collectOrphansAfterSave) {
+                          collectOrphansAfterSave = false;
+                          await collectOrphanAssets(activeAssetStore, activeProjectId.value, projectData, protectedAssetIds());
+                          if (orphanSweepTimer) clearTimeout(orphanSweepTimer);
+                          const projectId = activeProjectId.value;
+                          const store = activeAssetStore;
+                          orphanSweepTimer = setTimeout(() => {
+                              if (activeProjectId.value !== projectId || isGeneratingAll.value ||
+                                  characters.value.some(char => char.isGeneratingVoice) || scriptLines.value.some(line => line.isGenerating)) return;
+                              collectOrphanAssets(store, projectId, projectSnapshot(), protectedAssetIds()).catch(error => {
+                                  lastStorageError.value = error.message || String(error);
+                              });
+                          }, 121000);
+                      }
+                      lastStorageError.value = '';
+                  });
 
                   let saveTimeout = null;
                   const triggerAutoSave = () => {
                       if (saveTimeout) clearTimeout(saveTimeout);
                       saveTimeout = setTimeout(() => {
-                          saveProjectToDB().catch(e => console.warn('Auto-save failed', e));
+                          saveProjectToDB().catch(e => {
+                              lastStorageError.value = e.message || String(e);
+                              console.warn('Auto-save failed', e);
+                          });
                       }, 1000);
                   };
 
@@ -172,9 +216,12 @@ export function useUnitaleWorkspace() {
                       }
                       if (id === currentScriptId.value) return;
                       syncCurrentScriptState();
+                      dirtyScriptIds.add(currentScriptId.value);
 
                       const target = scriptList.value.find(s => s.id === id);
                       if (target) {
+                          const previous = scriptList.value.find(s => s.id === currentScriptId.value);
+                          if (previous) releaseScriptMedia(previous);
                           currentScriptId.value = id;
                           rawScript.value = target.data.rawScript || '';
                           scriptLines.value = target.data.scriptLines || [];
@@ -182,6 +229,8 @@ export function useUnitaleWorkspace() {
                           characters.value = target.data.characters || [];
                           characters.value.forEach(c => { if (c.volume === undefined) c.volume = 1.0; });
                           selectedLineIndex.value = -1;
+                          void hydrateScriptMedia(target).catch(error => console.warn('Media restore failed', error));
+                          triggerAutoSave();
                       }
                   };
 
@@ -211,6 +260,7 @@ export function useUnitaleWorkspace() {
 
                   const stopEditingScript = () => {
                       editingScriptId.value = null;
+                      triggerAutoSave();
                   };
 
                   const deleteScriptTab = (id) => {
@@ -228,6 +278,8 @@ export function useUnitaleWorkspace() {
                           switchScript(scriptList.value[nextIdx].id);
                       }
                       scriptList.value.splice(idx, 1);
+                      deletedScriptIds.add(id);
+                      collectOrphansAfterSave = true;
                       triggerAutoSave();
                   };
 
@@ -242,6 +294,8 @@ export function useUnitaleWorkspace() {
                   const importTxtRef = ref(null);
                   const isExportingProject = ref(false);
                   const exportStatus = ref('');
+                  const hasMoreArchiveParts = ref(false);
+                  let pendingArchiveParts = null;
                   const isGeneratingVideo = ref(false);
                   const videoResolution = ref('1920x1080');
                   let bgmAudioNode = null;
@@ -436,10 +490,58 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   const audioContext = new (window.AudioContext || window.webkitAudioContext)();
                   let videoRecordingAudioDestination = null;
                   const getAudioOutputNode = () => videoRecordingAudioDestination || audioContext.destination;
-                  const audioBufferCache = new Map();
-                  const processedDialogueAssetCache = new Map();
+                  const decodedCache = new DecodedAudioCache();
+                  const objectUrls = new ObjectUrlManager();
+                  const mediaOwner = (scriptId, line, field) => `${scriptId}:${line.id}:${field}`;
+                  let mediaGeneration = 0;
+                  const audioBufferCache = {
+                      has: key => decodedCache.has(`source:${key}`),
+                      get: key => decodedCache.get(`source:${key}`),
+                      set: (key, buffer) => decodedCache.set(`source:${key}`, buffer, audioBufferBytes(buffer)),
+                      delete: key => decodedCache.delete(`source:${key}`),
+                      clear: () => decodedCache.deletePrefix('source:'),
+                      values: () => decodedCache.values('source:')
+                  };
+                  const processedDialogueAssetCache = {
+                      has: key => decodedCache.has(`processed:${key}`),
+                      get: key => decodedCache.get(`processed:${key}`),
+                      set: (key, asset) => decodedCache.set(`processed:${key}`, asset,
+                          audioBufferBytes(asset.buffer), old => {
+                              if (old.ownsUrl) {
+                                  audioBufferCache.delete(old.url);
+                                  objectUrls.release(old.owner);
+                              }
+                          }),
+                      deletePrefix: prefix => decodedCache.deletePrefix(`processed:${prefix}`),
+                      clear: () => decodedCache.deletePrefix('processed:'),
+                      values: () => decodedCache.values('processed:')
+                  };
                   const processedDialogueBufferPromiseCache = new Map();
-                  const localFileMap = ref(new Map());
+                  const hydrateScriptMedia = async (script) => {
+                      const generation = mediaGeneration;
+                      for (const line of script?.data?.scriptLines || []) {
+                          if (generation !== mediaGeneration || script.id !== currentScriptId.value) return;
+                          const id = line.type === 'dialogue' ? line.audioAssetId : line.type === 'bgImage' ? line.bgImageAssetId : null;
+                          if (!id) continue;
+                          const urlField = line.type === 'dialogue' ? 'audioUrl' : 'imageUrl';
+                          if (line[urlField]) continue;
+                          const blob = await activeAssetStore.get(id);
+                          if (generation !== mediaGeneration || script.id !== currentScriptId.value) return;
+                          if (blob) line[urlField] = objectUrls.create(mediaOwner(script.id, line, urlField), blob);
+                      }
+                  };
+                  const releaseScriptMedia = (script) => {
+                      mediaGeneration++;
+                      processedDialogueAssetCache.deletePrefix(`${script?.id}|`);
+                      objectUrls.releasePrefix(`processed:${script?.id}|`);
+                      for (const line of script?.data?.scriptLines || []) {
+                          for (const field of ['audioUrl', 'imageUrl']) {
+                              if (field === 'audioUrl' && line[field]) audioBufferCache.delete(line[field]);
+                              objectUrls.release(mediaOwner(script.id, line, field));
+                              line[field] = '';
+                          }
+                      }
+                  };
                   const storageAudit = ref(/** @type {any} */ (null));
                   const refreshStorageAudit = async () => {
                       try {
@@ -451,14 +553,14 @@ Write the generated narration, dialogue, character names, and image_prompt value
                               libraries: { sfx: sfxLibrary.value, bgm: bgmLibrary.value, timbres: timbres.value,
                                   filters: filterLibrary.value, emotions: emotionPresets.value }
                           });
-                          const records = await listLegacyAssetRecords();
-                          const audit = auditAssetRecords(records, referencedLegacyAssetKeys(snapshot));
-                          const decoded = new Set();
-                          for (const buffer of audioBufferCache.values()) decoded.add(buffer);
-                          for (const asset of processedDialogueAssetCache.values()) if (asset.buffer) decoded.add(asset.buffer);
-                          const decodedBytes = [...decoded].reduce((sum, buffer) => sum + buffer.length * buffer.numberOfChannels * 4, 0);
+                          const records = await activeAssetStore.list(activeProjectId.value);
+                          const referenced = referencedAssetIds(snapshot);
+                          const audit = auditAssetRecords(records.map(ref => ({ key: ref.id, byteLength: ref.byteLength })), referenced);
+                          const available = new Set(records.map(ref => ref.id));
+                          const missingIds = [...referenced].filter(id => !available.has(id));
+                          const decodedBytes = decodedCache.byteLength;
                           const estimate = await navigator.storage?.estimate?.();
-                          storageAudit.value = { ...audit, decodedBytes,
+                          storageAudit.value = { ...audit, missingCount: missingIds.length, missingIds, decodedBytes,
                               originUsage: estimate?.usage ?? null, originQuota: estimate?.quota ?? null, error: '' };
                       } catch (error) {
                           storageAudit.value = { error: String(error?.message || error) };
@@ -476,6 +578,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       const trimEnd = line.trimEnd || 1;
                       const speed = line.speed || 1.0;
                       const cacheKey = [
+                          currentScriptId.value,
                           line.id,
                           line.audioUrl,
                           sourceBuffer.length,
@@ -488,6 +591,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       if (processedDialogueAssetCache.has(cacheKey)) {
                           return processedDialogueAssetCache.get(cacheKey);
                       }
+                      processedDialogueAssetCache.deletePrefix(`${currentScriptId.value}|${line.id}|`);
                       if (processedDialogueBufferPromiseCache.has(cacheKey)) {
                           return processedDialogueBufferPromiseCache.get(cacheKey);
                       }
@@ -504,6 +608,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                                   buffer: processedBuffer,
                                   blob: originalBlob,
                                   url: line.audioUrl,
+                                  ownsUrl: false,
                                   duration: processedBuffer.duration
                               };
                               processedDialogueAssetCache.set(cacheKey, asset);
@@ -532,12 +637,15 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           });
 
                           const processedBlob = new Blob([processedBytes.buffer.slice(processedBytes.byteOffset, processedBytes.byteOffset + processedBytes.byteLength)], { type: 'audio/wav' });
-                          const processedUrl = URL.createObjectURL(processedBlob);
+                          const owner = `processed:${cacheKey}`;
+                          const processedUrl = objectUrls.create(owner, processedBlob);
                           const processedBuffer = await loadAudioBuffer(processedUrl);
                           const asset = {
                               buffer: processedBuffer,
                               blob: processedBlob,
                               url: processedUrl,
+                              owner,
+                              ownsUrl: true,
                               duration: processedBuffer.duration
                           };
                           processedDialogueAssetCache.set(cacheKey, asset);
@@ -581,8 +689,10 @@ Write the generated narration, dialogue, character names, and image_prompt value
 
                       try {
                           let arrayBuffer;
-                          if (localFileMap.value.has(filename)) {
-                              arrayBuffer = await localFileMap.value.get(filename).arrayBuffer();
+                          if (filename.startsWith('asset:')) {
+                              const blob = await activeAssetStore.get(filename.slice(6));
+                              if (!blob) throw new Error(`Missing asset ${filename}`);
+                              arrayBuffer = await blob.arrayBuffer();
                           } else if (filename.match(/^(https?:\/\/|blob:)/)) {
                               const res = await fetch(filename);
                               if (!res.ok) throw new Error(`Failed to fetch ${filename}`);
@@ -615,6 +725,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   // --- 预览播放逻辑 ---
                   const previewPlayingFile = ref(null);
                   let previewSource = null;
+                  let releasePreviewBuffer = () => {};
 
                   const playPreview = async (item) => {
                       if (audioContext.state === 'suspended') await audioContext.resume();
@@ -622,6 +733,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       if (previewSource) {
                           try { previewSource.stop(); } catch (e) { }
                           previewSource = null;
+                          releasePreviewBuffer();
                       }
                       if (playbackAnimationFrame) {
                           cancelAnimationFrame(playbackAnimationFrame);
@@ -636,7 +748,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           trimStart = 0;
                           trimEnd = 1;
                       } else if (typeof item === 'object' && item !== null) {
-                          filename = item.filename || item.refPath;
+                          filename = item.assetId ? `asset:${item.assetId}` : item.filename || item.refPath;
                           volume = item.volume ?? 1.0;
                           trimStart = item.trimStart ?? 0;
                           trimEnd = item.trimEnd ?? 1;
@@ -654,6 +766,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
 
                       const buffer = await loadAudioBuffer(filename);
                       if (buffer) {
+                          releasePreviewBuffer = decodedCache.pinBuffer(buffer);
                           previewSource = audioContext.createBufferSource();
                           previewSource.buffer = buffer;
 
@@ -670,6 +783,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           const now = audioContext.currentTime;
 
                           previewSource.onended = () => {
+                              releasePreviewBuffer();
                               if (previewPlayingFile.value === filename) {
                                   previewPlayingFile.value = null;
                                   playbackProgress.value = 0;
@@ -710,7 +824,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
 
                   // --- 波形绘制与剪辑逻辑 ---
                   const drawWaveform = async (canvas, item) => {
-                      const audioPath = item.audioUrl || item.filename || item.refPath;
+                      const audioPath = item.audioUrl || (item.assetId ? `asset:${item.assetId}` : item.filename || item.refPath);
                       if (!canvas || !audioPath) return;
 
                       if (canvas._lastUrl === audioPath) return;
@@ -870,11 +984,31 @@ Write the generated narration, dialogue, character names, and image_prompt value
 
                        // --- Restore from IndexedDB ---
                        try {
-                           await initDB();
+                           await openWorkspaceDB();
                            isRestoring.value = true; // 开始恢复，暂停自动保存
 
                            // 1. Load Project Data
-                           const projectData = await loadProjectRecord();
+                           const activeWorkspace = await getActiveWorkspace();
+                           activeProjectId.value = activeWorkspace.id;
+                           storageBackend.value = activeWorkspace.backend;
+                           let projectData;
+                           if (activeWorkspace.backend === 'directory') {
+                               const handle = await loadRecentDirectory(activeWorkspace.id);
+                               const permission = handle && typeof handle.queryPermission === 'function'
+                                   ? await handle.queryPermission({ mode: 'readwrite' }) : 'denied';
+                               if (permission !== 'granted') {
+                                   storageAccessBlocked = true;
+                                   directoryError.value = '项目目录权限已失效，请重新选择目录。';
+                                   throw new Error(directoryError.value);
+                               }
+                               directoryStore = await DirectoryProjectStore.open(handle);
+                               activeAssetStore = directoryStore;
+                               directoryName.value = handle.name;
+                               projectData = await directoryStore.loadProject();
+                           } else {
+                               activeAssetStore = indexedDbAssetStore;
+                               projectData = await loadWorkspaceProject(activeProjectId.value);
+                           }
 
                            if (projectData) {
                                // --- STAGE 1: Restore all text/JSON data immediately ---
@@ -934,62 +1068,29 @@ Write the generated narration, dialogue, character names, and image_prompt value
                                    characters.value.forEach(c => { if (c.volume === undefined) c.volume = 1.0; });
                                }
 
-                               console.log('Project text data restored. Loading audio in background...');
-
-                               // --- STAGE 2: Load audio assets in the background ---
-                               setTimeout(async () => {
-                                   const restoreAssets = async (lib, fileKey) => {
-                                       if (!lib) return;
-                                       for (const item of lib) {
-                                           const filename = item[fileKey];
-                                           if (filename) {
-                                               if (localFileMap.value.has(filename)) continue;
-                                               const blob = await loadAssetFromDB(filename);
-                                               if (blob) {
-                                                   const file = new File([blob], filename, { type: blob.type });
-                                                   localFileMap.value.set(filename, file);
-                                                   loadAudioBuffer(filename); // Pre-cache decoded buffer
-                                               }
-                                           }
-                                       }
-                                   };
-
-                                   await restoreAssets(sfxLibrary.value, 'filename');
-                                   await restoreAssets(bgmLibrary.value, 'filename');
-                                   await restoreAssets(timbres.value, 'refPath');
-
-                                   const allChars = scriptList.value.flatMap(s => s.data.characters || []);
-                                   await restoreAssets(allChars, 'voiceFile');
-
-                                   // Restore script line audio
-                                   for (const script of scriptList.value) {
-                                       const lines = script.data.scriptLines || [];
-                                       for (const line of lines) {
-                                          if (line.type === 'dialogue') {
-                                               const audioKey = `line_audio_${line.id}`;
-                                               const blob = await loadAssetFromDB(audioKey);
-                                               if (blob) {
-                                                   line.audioUrl = URL.createObjectURL(blob);
-                                               }
-                                          } else if (line.type === 'bgImage') {
-                                              const bgKey = line.bgImageAssetKey || `bgImage_${line.id}`;
-                                              const blob = await loadAssetFromDB(bgKey);
-                                              if (blob) {
-                                                  line.imageUrl = URL.createObjectURL(blob);
-                                              }
-                                           }
-                                       }
-                                   }
-                                   console.log('Background audio loading complete.');
-                               }, 100); // Small delay to let UI render first
+                               // Only materialize media for the active script; other scripts remain on disk.
+                               if (active) void hydrateScriptMedia(active).catch(error => console.warn('Media restore failed', error));
+                               void collectOrphanAssets(activeAssetStore, activeProjectId.value, projectData, protectedAssetIds())
+                                   .catch(error => console.warn('Orphan cleanup failed', error));
 
                            }
                        } catch (e) {
                            console.error('Failed to restore from IndexedDB', e);
+                           if (storageBackend.value === 'directory') {
+                               storageAccessBlocked = true;
+                               directoryError.value = e.message || String(e);
+                           }
                        } finally {
                            // Slightly longer delay to ensure background loading has started
                            setTimeout(() => { isRestoring.value = false; }, 500);
                        }
+                  });
+                  onUnmounted(() => {
+                      objectUrls.releaseAll();
+                      audioBufferCache.clear();
+                      processedDialogueAssetCache.clear();
+                      if (saveTimeout) clearTimeout(saveTimeout);
+                      if (orphanSweepTimer) clearTimeout(orphanSweepTimer);
                   });
 
                   const currentTtsConfig = computed(() => {
@@ -1092,6 +1193,32 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       });
                   };
 
+                  const bindCharacterTimbre = (char) => {
+                      const timbre = timbres.value.find(item => item.refPath === char.voiceFile);
+                      char.voiceAssetId = timbre?.assetId || '';
+                      triggerAutoSave();
+                  };
+                  const replaceVoiceReference = (previousPath, nextPath, assetId) => {
+                      if (!previousPath) return;
+                      for (const char of characters.value) {
+                          if (char.voiceFile === previousPath) {
+                              char.voiceFile = nextPath;
+                              char.voiceAssetId = assetId;
+                          }
+                      }
+                      for (const script of scriptList.value) {
+                          let changed = false;
+                          for (const char of script.data.characters || []) {
+                              if (char.voiceFile === previousPath) {
+                                  char.voiceFile = nextPath;
+                                  char.voiceAssetId = assetId;
+                                  changed = true;
+                              }
+                          }
+                          if (changed) dirtyScriptIds.add(script.id);
+                      }
+                  };
+
                   const deleteCharacter = (id) => {
                       if (!confirm(translateMessage("确定删除此角色吗？"))) return;
                       characters.value = characters.value.filter(c => c.id !== id);
@@ -1157,6 +1284,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       if (!char.voiceDescription) return alert(translateMessage("请先填写音色描述"));
 
                       char.isGeneratingVoice = true;
+                      let pendingVoiceAssetId = null;
                       const startTime = Date.now();
                       const controller = new AbortController();
                       char.abortController = controller;
@@ -1202,13 +1330,16 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           const file = new File([blob], filename, { type: 'audio/wav' });
 
                           // 2. 保存到本地资源管理
-                          localFileMap.value.set(filename, file);
-                          await saveAssetToDB(filename, file);
+                          const voiceAsset = await activeAssetStore.put(file, { projectId: activeProjectId.value, kind: 'voice' });
+                          pendingVoiceAssetId = voiceAsset.id;
+                          pendingAssetIds.add(voiceAsset.id);
+                          const servicePath = `unitale_${voiceAsset.id}.wav`;
+                          const serviceFile = new File([blob], servicePath, { type: 'audio/wav' });
 
                           // 3. 上传回 TTS 服务器 (用于 IndexTTS 调用)
                           const formData = new FormData();
-                          formData.append('audio', file);
-                          formData.append('full_path', filename);
+                          formData.append('audio', serviceFile);
+                          formData.append('full_path', servicePath);
 
                           const upRes = await requestService(`${baseUrl}/v1/upload_audio`, {
                               method: 'POST',
@@ -1223,20 +1354,29 @@ Write the generated narration, dialogue, character names, and image_prompt value
 
                           if (existingIndex !== -1) {
                               // 更新已有音色
+                              collectOrphansAfterSave = true;
+                              replaceVoiceReference(timbres.value[existingIndex].refPath, servicePath, voiceAsset.id);
                               timbres.value[existingIndex].description = char.voiceDescription;
-                              timbres.value[existingIndex].refPath = filename;
+                              timbres.value[existingIndex].refPath = servicePath;
+                              timbres.value[existingIndex].originalFileName = filename;
+                              timbres.value[existingIndex].assetId = voiceAsset.id;
                           } else {
                               // 新增音色
                               timbres.value.push({
                                   id: Date.now().toString(),
                                   name: timbreName,
                                   description: char.voiceDescription,
-                                  refPath: filename
+                                  refPath: servicePath,
+                                  originalFileName: filename,
+                                  assetId: voiceAsset.id
                               });
                           }
 
                           // 5. 选中该音色
-                          char.voiceFile = filename;
+                          char.voiceFile = servicePath;
+                          char.voiceAssetId = voiceAsset.id;
+                          pendingAssetIds.delete(voiceAsset.id);
+                          pendingVoiceAssetId = null;
 
                           // 6. 自动保存
                           triggerAutoSave();
@@ -1257,6 +1397,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           }
                           alert(translateMessage("生成音色失败: {0}", { 0: msg }));
                       } finally {
+                          if (pendingVoiceAssetId) pendingAssetIds.delete(pendingVoiceAssetId);
                           clearTimeout(timeoutId);
                           char.isGeneratingVoice = false;
                           delete char.abortController;
@@ -1268,10 +1409,12 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       const file = event.target.files[0];
                       if (file) {
                           try {
-                              await saveAssetToDB(file.name, file);
-                              timbreForm.value.refPath = file.name;
+                              const saved = await activeAssetStore.put(file, { projectId: activeProjectId.value, kind: 'voice' });
+                              timbreForm.value.assetId = saved.id;
+                              const extension = file.name.match(/\.[a-zA-Z0-9]{1,8}$/)?.[0] || '.wav';
+                              timbreForm.value.refPath = `unitale_${saved.id}${extension}`;
+                              timbreForm.value.originalFileName = file.name;
                               timbreFile.value = file;
-                              localFileMap.value.set(file.name, file);
                               triggerAutoSave();
                           } catch (error) {
                               console.error('Failed to save voice reference:', error);
@@ -1304,7 +1447,11 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           if (!t.refPath) continue;
 
                           // 检查内存中是否有该文件
-                          const file = localFileMap.value.get(t.refPath);
+                          let file = null;
+                          if (t.assetId) {
+                              const blob = await activeAssetStore.get(t.assetId);
+                              if (blob) file = new File([blob], t.refPath, { type: blob.type });
+                          }
                           if (!file) {
                               console.warn(`音色文件未在内存中找到 (可能未导入或丢失): ${t.refPath}`);
                               continue;
@@ -1364,8 +1511,10 @@ Write the generated narration, dialogue, character names, and image_prompt value
 
                           // After a potential upload, save the metadata.
                           if (isEditingTimbre.value) {
+                              collectOrphansAfterSave = true;
                               const index = timbres.value.findIndex(c => c.id === targetId);
                               if (index !== -1) {
+                                  replaceVoiceReference(timbres.value[index].refPath, newTimbreData.refPath, newTimbreData.assetId);
                                   timbres.value[index] = newTimbreData;
                               }
                           } else {
@@ -1388,6 +1537,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
 
                   const deleteTimbre = async (id) => {
                       if (!confirm(translateMessage("确定删除此音色吗？"))) return;
+                      collectOrphansAfterSave = true;
                       timbres.value = timbres.value.filter(c => c.id !== id);
                       // saveTimbresToLocal();
                       if (selectedTimbreId.value === id) selectedTimbreId.value = '';
@@ -1409,12 +1559,12 @@ Write the generated narration, dialogue, character names, and image_prompt value
 
                       try {
                           if (isEditingSfx.value) {
+                              collectOrphansAfterSave = true;
                               const index = sfxLibrary.value.findIndex(s => s.id === sfxForm.value.id);
                               if (index !== -1) sfxLibrary.value[index] = { ...sfxForm.value };
                           } else {
                               sfxLibrary.value.push({ ...sfxForm.value, id: Date.now().toString(), enabled: true });
                           }
-                          if (sfxForm.value.filename) loadAudioBuffer(sfxForm.value.filename);
                           // saveSfxToLocal();
                           resetSfxForm();
                       } catch (e) {
@@ -1429,6 +1579,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
 
                   const deleteSfx = (id) => {
                       if (!confirm(translateMessage("确定删除？"))) return;
+                      collectOrphansAfterSave = true;
                       sfxLibrary.value = sfxLibrary.value.filter(s => s.id !== id);
                   };
 
@@ -1441,14 +1592,13 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       const file = event.target.files[0];
                       if (file) {
                           try {
-                              await saveAssetToDB(file.name, file);
+                              const saved = await activeAssetStore.put(file, { projectId: activeProjectId.value, kind: 'sfx' });
+                              sfxForm.value.assetId = saved.id;
                               sfxForm.value.filename = file.name;
                               sfxForm.value.trimStart = 0;
                               sfxForm.value.trimEnd = 1;
                               sfxForm.value.volume = 0.3;
-                              localFileMap.value.set(file.name, file);
                               triggerAutoSave();
-                              loadAudioBuffer(file.name);
                           } catch (error) {
                               console.error('Failed to save sound effect:', error);
                               alert(translateMessage('保存音效失败: {0}', { 0: error.message }));
@@ -1469,12 +1619,12 @@ Write the generated narration, dialogue, character names, and image_prompt value
 
                       try {
                           if (isEditingBgm.value) {
+                              collectOrphansAfterSave = true;
                               const index = bgmLibrary.value.findIndex(s => s.id === bgmForm.value.id);
                               if (index !== -1) bgmLibrary.value[index] = { ...bgmForm.value };
                           } else {
                               bgmLibrary.value.push({ ...bgmForm.value, id: Date.now().toString(), enabled: true });
                           }
-                          if (bgmForm.value.filename) loadAudioBuffer(bgmForm.value.filename);
                           // saveBgmToLocal();
                           resetBgmForm();
                       } catch (e) {
@@ -1489,6 +1639,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
 
                   const deleteBgm = (id) => {
                       if (!confirm(translateMessage("确定删除？"))) return;
+                      collectOrphansAfterSave = true;
                       bgmLibrary.value = bgmLibrary.value.filter(s => s.id !== id);
                   };
 
@@ -1501,14 +1652,13 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       const file = event.target.files[0];
                       if (file) {
                           try {
-                              await saveAssetToDB(file.name, file);
+                              const saved = await activeAssetStore.put(file, { projectId: activeProjectId.value, kind: 'bgm' });
+                              bgmForm.value.assetId = saved.id;
                               bgmForm.value.filename = file.name;
                               bgmForm.value.trimStart = 0;
                               bgmForm.value.trimEnd = 1;
                               bgmForm.value.volume = 0.3;
-                              localFileMap.value.set(file.name, file);
                               triggerAutoSave();
-                              loadAudioBuffer(file.name);
                           } catch (error) {
                               console.error('Failed to save background music:', error);
                               alert(translateMessage('保存 BGM 失败: {0}', { 0: error.message }));
@@ -1627,6 +1777,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   };
 
                   let dialogueSource = null;
+                  let releaseDialogueBuffer = () => {};
                   let sfxSources = [];
                   const isAuditioningId = ref(null);
 
@@ -1697,11 +1848,18 @@ Write the generated narration, dialogue, character names, and image_prompt value
                               emo_vector: finalVector
                           };
 
+                          const selectedTimbre = timbres.value.find(item => item.refPath === char.voiceFile);
+                          if (selectedTimbre) char.voiceAssetId = selectedTimbre.assetId || '';
+
                           const cfg = currentTtsConfig.value;
                           let baseUrl = cfg.baseUrl.trim().replace(/\/+$/, '');
                           if (baseUrl.endsWith('/v1')) baseUrl = baseUrl.slice(0, -3);
 
-                          const voiceFile = localFileMap.value.get(char.voiceFile);
+                          let voiceFile = null;
+                          if (char.voiceAssetId) {
+                              const voiceBlob = await activeAssetStore.get(char.voiceAssetId);
+                              if (voiceBlob) voiceFile = new File([voiceBlob], char.voiceFile, { type: voiceBlob.type });
+                          }
                           if (voiceFile) {
                               try {
                                   const checkUrl = `${baseUrl}/v1/check/audio?file_name=${encodeURIComponent(char.voiceFile)}`;
@@ -1735,11 +1893,14 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           }
 
                           const blob = await synthRes.blob();
-                          await saveAssetToDB(`line_audio_${line.id}`, blob);
-                          const audioUrl = URL.createObjectURL(blob);
+                          const saved = await activeAssetStore.put(blob, { projectId: activeProjectId.value, kind: 'dialogue' });
+                          if (line.audioAssetId) collectOrphansAfterSave = true;
+                          line.audioAssetId = saved.id;
+                          const audioUrl = objectUrls.create(mediaOwner(currentScriptId.value, line, 'audioUrl'), blob);
                           line.audioUrl = audioUrl;
                           line.trimStart = 0;
                           line.trimEnd = 1;
+                          await saveProjectToDB();
 
                       } catch (e) {
                           // Don't show alert for abort errors, just log and re-throw
@@ -1944,6 +2105,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                                   dialogueSource.onended = null; // Prevent onended from firing on manual stop
                                   dialogueSource.stop();
                                   dialogueSource = null;
+                                  releaseDialogueBuffer();
                               }
 
                               if (playbackAnimationFrame) {
@@ -1972,7 +2134,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                                   const promises = line.sfx.map(async (sfxItem) => {
                                       const sfxLibItem = sfxLibrary.value.find(s => s.name === sfxItem.name);
                                       if (sfxLibItem && sfxLibItem.filename) {
-                                          const buf = await loadAudioBuffer(sfxLibItem.filename);
+                                          const buf = await loadAudioBuffer(sfxLibItem.assetId ? `asset:${sfxLibItem.assetId}` : sfxLibItem.filename);
                                           if (buf) return {
                                               buffer: buf,
                                               item: sfxItem,
@@ -1993,6 +2155,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                                   return resolve();
                               }
                               const { trimStart, trimEnd, processedBuffer } = timingInfo;
+                              releaseDialogueBuffer = decodedCache.pinBuffer(processedBuffer);
                               const processedDuration = processedBuffer.duration;
                               const sfxBuffers = await loadSfx();
                               const trimSpan = Math.max(0.0001, trimEnd - trimStart);
@@ -2056,6 +2219,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                               lastNode.connect(dialogueGain).connect(getAudioOutputNode());
 
                               const finishPlayback = () => {
+                                  releaseDialogueBuffer();
                                   if (playbackAnimationFrame) {
                                       cancelAnimationFrame(playbackAnimationFrame);
                                       playbackAnimationFrame = null;
@@ -2090,6 +2254,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
 
                           } catch (e) {
                               console.error("Failed to play audio:", e);
+                              releaseDialogueBuffer();
                               // alert('播放音频失败，请检查文件或网络。'); // Suppress alert for smoother UX
                               isAuditioningId.value = null;
                               resolve(); // Resolve to not block sequence
@@ -2098,559 +2263,262 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   };
 
                   const clearLineAudio = async (line) => {
-                      if (!line.audioUrl) return;
+                      if (!line.audioUrl && !line.audioAssetId) return;
 
                       const audioUrlToDelete = line.audioUrl;
-                      const audioKey = `line_audio_${line.id}`;
-
-                      try {
-                          await deleteAssetFromDB(audioKey);
-                      } catch (e) {
-                          console.error(`Failed to delete asset ${audioKey} from DB`, e);
-                          throw e;
-                      }
-
                       line.audioUrl = '';
-                      URL.revokeObjectURL(audioUrlToDelete);
+                      line.audioAssetId = '';
+                      objectUrls.release(mediaOwner(currentScriptId.value, line, 'audioUrl'));
                       audioBufferCache.delete(audioUrlToDelete);
+                      processedDialogueAssetCache.deletePrefix(`${currentScriptId.value}|${line.id}|`);
+                      collectOrphansAfterSave = true;
                       triggerAutoSave();
                   };
 
-                  // --- 存档管理逻辑 ---
-                  // Project media conversion and streaming import live in the project service.
+                  // --- Versioned project archive ---
+                  const projectSnapshot = () => {
+                      syncCurrentScriptState();
+                      return createProjectSnapshot({
+                          characters: characters.value,
+                          scriptList: scriptList.value,
+                          currentScriptId: currentScriptId.value,
+                          libraries: { sfx: sfxLibrary.value, bgm: bgmLibrary.value,
+                              timbres: timbres.value, filters: filterLibrary.value,
+                              emotions: emotionPresets.value }
+                      });
+                  };
+                  const hasActiveMediaTask = () => isAnalyzingScript.value || isGeneratingAll.value ||
+                      isSequencePlaying.value || isExportingAudio.value || isGeneratingVideo.value ||
+                      characters.value.some(char => char.isGeneratingVoice) || scriptLines.value.some(line => line.isGenerating);
+                  const protectedAssetIds = () => new Set([
+                      ...pendingAssetIds,
+                      timbreForm.value.assetId,
+                      sfxForm.value.assetId,
+                      bgmForm.value.assetId
+                  ].filter(Boolean));
+                  const downloadArchivePart = ({ name, blob }) => {
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = name;
+                      document.body.appendChild(a);
+                      a.click();
+                      a.remove();
+                      setTimeout(() => URL.revokeObjectURL(url), 30000);
+                  };
                   const exportScriptState = async () => {
-                      if (!confirm(translateMessage("即将导出包含所有素材（音效、BGM、音色）的完整工程文件。如果素材较多，文件可能较大，请耐心等待。"))) return;
-
-                      isExportingProject.value = true;
-                      exportStatus.value = translateMessage("准备中...");
-
-                      syncCurrentScriptState(); // 确保最新状态
-
+                      if (isExportingProject.value) return;
+                      if (hasActiveMediaTask()) return alert(translateMessage('storage.busy'));
+                      pendingArchiveParts = null;
+                      hasMoreArchiveParts.value = false;
+                      // The picker needs the click gesture, before the asynchronous archive work.
+                      let writable = null;
                       try {
-                          // 1. 处理资源库 (嵌入音频文件)
-                          const processLibrary = async (lib, fileKey) => {
-                              const processed = [];
-                              for (let i = 0; i < lib.length; i++) {
-                                  const item = lib[i];
-                                  // 进度提示 & 让出主线程防止卡死
-                                  if (i % 20 === 0) { exportStatus.value = translateMessage("打包资源 {0}%", { 0: Math.round((i / lib.length) * 100) }); await new Promise(r => requestAnimationFrame(r)); }
-
-                                  const itemCopy = { ...item };
-                                  const filename = item[fileKey];
-                                  if (filename) {
-                                      let blob = null;
-                                      // 1. 优先从内存 Map 获取 (File 对象)
-                                      if (localFileMap.value.has(filename)) {
-                                          blob = localFileMap.value.get(filename);
-                                      }
-                                      // 2. 如果内存没有，尝试从 IndexedDB 读取 (Blob)
-                                      if (!blob) {
-                                          blob = await loadAssetFromDB(filename);
-                                      }
-
-                                      if (blob) {
-                                          try {
-                                              itemCopy._fileData = await blobToBase64(blob);
-                                              itemCopy._mimeType = blob.type;
-                                          } catch (e) {
-                                              console.warn(`Failed to embed file: ${filename}`, e);
-                                          }
-                                      }
-                                  }
-                                  processed.push(itemCopy);
-                              }
-                              return processed;
-                          };
-
-                          const sfxExport = await processLibrary(sfxLibrary.value, 'filename');
-                          const bgmExport = await processLibrary(bgmLibrary.value, 'filename');
-                          const timbreExport = await processLibrary(timbres.value, 'refPath');
-
-                          // 导出所有脚本的音频
-                          const scriptListExport = JSON.parse(JSON.stringify(scriptList.value));
-
-                          // 遍历所有脚本的所有台词
-                          for (const script of scriptListExport) {
-                              const lines = script.data.scriptLines || [];
-                              for (let i = 0; i < lines.length; i++) {
-                                  const line = lines[i];
-                                  line.isGenerating = false;
-
-                              if (i % 20 === 0) { exportStatus.value = translateMessage("打包音频..."); await new Promise(r => requestAnimationFrame(r)); }
-
-                              // 尝试获取音频 Blob (优先 fetch URL，失败则查 DB)
-                              let blob = null;
-                              // 注意：这里 line.audioUrl 在 scriptListExport 中只是字符串，
-                              // 我们需要去原始 scriptList 中找对应的 blob url，或者直接查 DB
-
-                              // 简单起见，直接查 DB，因为 audioUrl 可能是 blob: 且不一定在当前页面上下文中有效（如果跨页面）
-                              // 但这里是在当前页面，所以 blob url 有效。
-                              // 我们需要找到原始内存中的 line 对象来获取 audioUrl
-                              const originalScript = scriptList.value.find(s => s.id === script.id);
-                              const originalLine = originalScript?.data.scriptLines[i];
-
-                              if (line.audioUrl) {
-                                  try {
-                                      const res = await fetch(originalLine.audioUrl);
-                                      blob = await res.blob();
-                                  } catch (e) { /* ignore */ }
-                              }
-
-                              if (!blob && line.type === 'dialogue') {
-                                  blob = await loadAssetFromDB(`line_audio_${line.id}`);
-                              }
-
-                              if (!blob && line.type === 'bgImage') {
-                                  const bgKey = line.bgImageAssetKey || `bgImage_${line.id}`;
-                                  blob = await loadAssetFromDB(bgKey);
-                              }
-
-                              if (blob) {
-                                  try {
-                                      if (line.type === 'dialogue') {
-                                          line.audioBase64 = await blobToBase64(blob);
-                                          line.audioUrl = ''; // 导出时不保存 blob URL
-                                      } else if (line.type === 'bgImage') {
-                                          line.imageBase64 = await blobToBase64(blob);
-                                          line.imageMimeType = blob.type;
-                                          line.imageUrl = ''; // 导出时不保存 blob URL
-                                      }
-                                  } catch (e) {
-                                      console.warn('导出资源失败:', line.id, e);
-                                  }
-                              }
+                          if (window.showSaveFilePicker) {
+                              const handle = await window.showSaveFilePicker({
+                                  suggestedName: `Unitale_${Date.now()}.zip`,
+                                  types: [{ description: 'Unitale ZIP archive', accept: { 'application/zip': ['.zip'] } }]
+                              });
+                              writable = await handle.createWritable();
+                          }
+                      } catch (error) {
+                          if (error?.name === 'AbortError') return;
+                          console.warn('File picker unavailable, using download parts', error);
+                      }
+                      isExportingProject.value = true;
+                      exportStatus.value = translateMessage('准备中...');
+                      try {
+                          const snapshot = projectSnapshot();
+                          const refs = await activeAssetStore.list(activeProjectId.value);
+                          if (writable) {
+                              await exportArchiveToStream(snapshot, refs, activeAssetStore, writable);
+                          } else {
+                              pendingArchiveParts = exportArchiveParts(snapshot, refs, activeAssetStore);
+                              const first = await pendingArchiveParts.next();
+                              if (!first.done) {
+                                  downloadArchivePart(first.value);
+                                  const match = first.value.name.match(/part-(\d+)-of-(\d+)/);
+                                  hasMoreArchiveParts.value = !!match && Number(match[1]) < Number(match[2]);
                               }
                           }
-
-                          exportStatus.value = translateMessage("生成文件...");
-                          await new Promise(r => requestAnimationFrame(r));
-
-                          const blob = createProjectExportBlob({
-                              sfx: sfxExport,
-                              bgm: bgmExport,
-                              timbres: timbreExport,
-                              filters: filterLibrary.value,
-                              emotions: emotionPresets.value,
-                              characters: characters.value,
-                              scriptList: scriptListExport,
-                              currentScriptId: currentScriptId.value
-                          });
-                          const url = URL.createObjectURL(blob);
-                          const a = document.createElement('a');
-                          a.href = url;
-                          const now = new Date();
-                          const timestamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
-                          a.download = `${translateMessage('Unitale工程文件')}_${timestamp}.json`;
-                          document.body.appendChild(a);
-                          a.click();
-                          document.body.removeChild(a);
-                          setTimeout(() => URL.revokeObjectURL(url), 30000);
-                      } catch (e) {
-                          console.error(e);
-                          alert(translateMessage("导出失败: {0}", { 0: e.message }));
+                      } catch (error) {
+                          if (writable) try { await writable.abort(); } catch { /* preserve original error */ }
+                          console.error(error);
+                          alert(translateMessage('导出失败: {0}', { 0: error.message }));
                       } finally {
                           isExportingProject.value = false;
                           exportStatus.value = '';
                       }
                   };
-
-                  const triggerImport = () => {
-                      importFileRef.value.click();
+                  const downloadNextArchivePart = async () => {
+                      if (!pendingArchiveParts || !hasMoreArchiveParts.value || isExportingProject.value) return;
+                      isExportingProject.value = true;
+                      try {
+                          const next = await pendingArchiveParts.next();
+                          if (next.done) {
+                              hasMoreArchiveParts.value = false;
+                              pendingArchiveParts = null;
+                              return;
+                          }
+                          downloadArchivePart(next.value);
+                          const match = next.value.name.match(/part-(\d+)-of-(\d+)/);
+                          hasMoreArchiveParts.value = !!match && Number(match[1]) < Number(match[2]);
+                          if (!hasMoreArchiveParts.value) pendingArchiveParts = null;
+                      } catch (error) {
+                          alert(translateMessage('导出失败: {0}', { 0: error.message }));
+                      } finally { isExportingProject.value = false; }
                   };
 
-                  const handleImportFile = async (event) => {
-                      const file = event.target.files[0];
-                      if (!file) return;
-                      const previousState = {
-                          rawScript: rawScript.value, rawAnalysisResult: rawAnalysisResult.value,
-                          characters: characters.value, scriptLines: scriptLines.value,
-                          scriptList: scriptList.value, currentScriptId: currentScriptId.value,
-                          sfxLibrary: sfxLibrary.value, bgmLibrary: bgmLibrary.value,
-                          timbres: timbres.value, filterLibrary: filterLibrary.value,
-                          emotionPresets: emotionPresets.value,
-                          localFiles: new Map(localFileMap.value)
-                      };
-
+                  const applyProjectSnapshot = async snapshot => {
+                      for (const script of scriptList.value) releaseScriptMedia(script);
+                      scriptList.value = snapshot.scriptList;
+                      currentScriptId.value = snapshot.currentScriptId;
+                      sfxLibrary.value = snapshot.libraries.sfx;
+                      bgmLibrary.value = snapshot.libraries.bgm;
+                      timbres.value = snapshot.libraries.timbres;
+                      filterLibrary.value = snapshot.libraries.filters;
+                      emotionPresets.value = snapshot.libraries.emotions;
+                      const active = scriptList.value.find(script => script.id === currentScriptId.value) || scriptList.value[0];
+                      if (active) {
+                          currentScriptId.value = active.id;
+                          rawScript.value = active.data.rawScript || '';
+                          scriptLines.value = active.data.scriptLines || [];
+                          rawAnalysisResult.value = active.data.rawAnalysisResult || '';
+                          characters.value = active.data.characters || [];
+                          await hydrateScriptMedia(active).catch(error => console.warn('Media restore failed', error));
+                      } else {
+                          rawScript.value = '';
+                          scriptLines.value = [];
+                          rawAnalysisResult.value = '';
+                          characters.value = snapshot.characters || [];
+                      }
+                      audioBufferCache.clear();
+                      processedDialogueAssetCache.clear();
+                      dirtyScriptIds.clear();
+                      deletedScriptIds.clear();
+                  };
+                  const directoryModeAvailable = typeof window.showDirectoryPicker === 'function';
+                  const migrateToDirectory = async () => {
+                      if (!directoryModeAvailable || directoryStore) return;
+                      if (hasActiveMediaTask()) return alert(translateMessage('storage.busy'));
+                      let parent;
+                      try { parent = await window.showDirectoryPicker({ mode: 'readwrite' }); }
+                      catch (error) { if (error?.name !== 'AbortError') alert(error.message); return; }
+                      if (!await ensureDirectoryPermission(parent)) return alert('无法获得目录写入权限。');
+                      isExportingProject.value = true;
                       try {
-                          isRestoring.value = true; // 导入期间锁定，防止自动保存触发
-                          if (saveTimeout) clearTimeout(saveTimeout);
-                          isExportingProject.value = true; // 复用 loading 状态
-                          exportStatus.value = translateMessage("读取巨型文件中...");
+                          await saveProjectToDB();
+                          const snapshot = projectSnapshot();
+                          const referenced = referencedAssetIds(snapshot);
+                          const refs = (await indexedDbAssetStore.list(activeProjectId.value))
+                              .filter(ref => referenced.has(ref.id));
+                          const store = await DirectoryProjectStore.migrateFromIndexedDb(parent, snapshot, indexedDbAssetStore, refs);
+                          await storeRecentDirectory(store.projectId, store.handle);
+                          await setActiveWorkspace({ id: store.projectId, backend: 'directory' });
+                          directoryStore = store;
+                          activeAssetStore = store;
+                          activeProjectId.value = store.projectId;
+                          storageBackend.value = 'directory';
+                          directoryName.value = store.handle.name;
+                          directoryError.value = '';
+                          storageAccessBlocked = false;
+                          alert(`目录项目已建立：${store.handle.name}`);
+                      } catch (error) {
+                          console.error('Directory migration failed', error);
+                          alert(translateMessage('导出失败: {0}', { 0: error.message }));
+                      } finally { isExportingProject.value = false; }
+                  };
+                  const openDirectoryProject = async () => {
+                      if (!directoryModeAvailable) return;
+                      if (hasActiveMediaTask()) return alert(translateMessage('storage.busy'));
+                      let handle;
+                      try { handle = await window.showDirectoryPicker({ mode: 'readwrite' }); }
+                      catch (error) { if (error?.name !== 'AbortError') alert(error.message); return; }
+                      if (!await ensureDirectoryPermission(handle)) return alert('无法获得目录写入权限。');
+                      isRestoring.value = true;
+                      isExportingProject.value = true;
+                      if (saveTimeout) clearTimeout(saveTimeout);
+                      try {
+                          if (!storageAccessBlocked) await saveProjectToDB();
+                          const store = await DirectoryProjectStore.open(handle);
+                          const snapshot = await store.loadProject();
+                          await storeRecentDirectory(store.projectId, handle);
+                          await setActiveWorkspace({ id: store.projectId, backend: 'directory' });
+                          directoryStore = store;
+                          activeAssetStore = store;
+                          activeProjectId.value = store.projectId;
+                          storageBackend.value = 'directory';
+                          directoryName.value = handle.name;
+                          directoryError.value = '';
+                          storageAccessBlocked = false;
+                          await applyProjectSnapshot(snapshot);
+                      } catch (error) {
+                          console.error('Open directory failed', error);
+                          directoryError.value = error.message;
+                          alert(translateMessage('导入失败: {0}', { 0: error.message }));
+                      } finally {
+                          isRestoring.value = false;
+                          isExportingProject.value = false;
+                      }
+                  };
+                  const clearLegacyDatabase = async () => {
+                      if (!confirm(translateMessage('storage.legacyConfirm'))) return;
+                      try {
+                          await new Promise((resolve, reject) => {
+                              const request = indexedDB.deleteDatabase('UnitaleDB');
+                              request.onsuccess = () => resolve();
+                              request.onerror = () => reject(request.error);
+                              request.onblocked = () => reject(new Error('Close other tabs using the old database first'));
+                          });
+                          alert(translateMessage('storage.legacyCleared'));
+                      } catch (error) {
+                          alert(translateMessage('导入失败: {0}', { 0: error.message }));
+                      }
+                  };
 
-                          exportStatus.value = translateMessage("读取文件中...");
-                          const extractedBlobs = [];
-                          let data;
-
-                          if (file.size > 50 * 1024 * 1024) {
-                              exportStatus.value = translateMessage("提取媒体数据...");
-                              const { tinyJsonStr, extractedBlobs: streamExtractedBlobs } = await extractMediaJsonFromFileStream(file);
-                              extractedBlobs.push(...streamExtractedBlobs);
-                              if (!tinyJsonStr || !tinyJsonStr.trim()) {
-                                  throw new Error(translateMessage("导入文件为空或流式读取失败。"));
-                              }
-
-                              exportStatus.value = translateMessage("解析结构数据...");
-                              try {
-                                  data = JSON.parse(tinyJsonStr);
-                              } catch (err) {
-                                  console.error("JSON解析失败:", err);
-                                  const match = err.message.match(/position (\d+)/);
-                                  if (match) {
-                                      const pos = parseInt(match[1]);
-                                      console.error("解析出错位置附近内容:", tinyJsonStr.substring(Math.max(0, pos - 80), pos + 80));
-                                  } else {
-                                      console.error("流式预处理后尾部片段:", tinyJsonStr.slice(-200));
-                                  }
-                                  exportStatus.value = translateMessage("解析失败: {0}", { 0: err.message });
-                                  throw err;
-                              }
-                          } else {
-                              const text = await file.text();
-                              if (!text || !text.trim()) {
-                                  throw new Error(translateMessage("导入文件为空。请重新导出后再试；旧导出的文件可能在下载时没有完整写入。"));
-                              }
-
-                              exportStatus.value = translateMessage("解析结构数据...");
-                              try {
-                                  data = JSON.parse(text);
-                              } catch (directParseError) {
-                                  console.warn('直接解析失败，尝试启用 Base64 提取兼容路径...', directParseError);
-                                  exportStatus.value = translateMessage("提取媒体数据...");
-
-                                  let tinyJsonStr;
-                                  try {
-                                      tinyJsonStr = text.replace(/"(_fileData|audioBase64|imageBase64)"\s*:\s*"(data:[^"]+)"/g, (match, key, base64) => {
-                                          extractedBlobs.push(base64);
-                                          return `"${key}":"__EXTRACTED_BASE64_${extractedBlobs.length - 1}__"`;
-                                      });
-                                  } catch (e) {
-                                      console.error('正则替换提取Base64时出错:', e);
-                                      exportStatus.value = translateMessage("提取失败: {0}", { 0: e.message });
-                                      throw e;
-                                  }
-
-                                  try {
-                                      data = JSON.parse(tinyJsonStr);
-                                  } catch (err) {
-                                      console.error("JSON解析失败:", err);
-                                      const match = err.message.match(/position (\d+)/);
-                                      if (match) {
-                                          const pos = parseInt(match[1]);
-                                          console.error("解析出错位置附近内容:", tinyJsonStr.substring(Math.max(0, pos - 80), pos + 80));
-                                      } else {
-                                          console.error("原始文件尾部片段:", text.slice(-200));
-                                          console.error("预处理后尾部片段:", tinyJsonStr.slice(-200));
-                                      }
-                                      exportStatus.value = translateMessage("解析失败: {0}", { 0: err.message });
-                                      throw err;
-                                  }
-                              }
+                  const triggerImport = () => importFileRef.value?.click();
+                  const handleImportFile = async (event) => {
+                      const files = Array.from(event.target.files || []);
+                      event.target.value = '';
+                      if (!files.length) return;
+                      if (hasActiveMediaTask()) return alert(translateMessage('storage.busy'));
+                      if (!confirm(translateMessage('检测到完整工程文件。导入将覆盖当前的【资源库和脚本】（模型配置不会被覆盖）。确定继续吗？'))) return;
+                      const oldWorkspace = { id: activeProjectId.value, backend: storageBackend.value };
+                      const oldAssetStore = activeAssetStore;
+                      const oldDirectoryStore = directoryStore;
+                      isRestoring.value = true;
+                      isExportingProject.value = true;
+                      exportStatus.value = translateMessage('读取文件中...');
+                      if (saveTimeout) clearTimeout(saveTimeout);
+                      try {
+                          await saveQueue.catch(() => {});
+                          const { projectId, snapshot } = await importArchiveParts(files, indexedDbAssetStore);
+                          // The complete staged project is durable before switching the active pointer.
+                          await setActiveProjectId(projectId);
+                          directoryStore = null;
+                          activeAssetStore = indexedDbAssetStore;
+                          activeProjectId.value = projectId;
+                          storageBackend.value = 'indexeddb';
+                          directoryName.value = '';
+                          directoryError.value = '';
+                          storageAccessBlocked = false;
+                          await applyProjectSnapshot(snapshot);
+                          alert(translateMessage('完整工程导入成功！所有资源和设置已恢复。'));
+                      } catch (error) {
+                          console.error('Project archive import failed', error);
+                          if (activeProjectId.value !== oldWorkspace.id) {
+                              await setActiveWorkspace(oldWorkspace);
+                              activeProjectId.value = oldWorkspace.id;
+                              activeAssetStore = oldAssetStore;
+                              directoryStore = oldDirectoryStore;
+                              storageBackend.value = oldWorkspace.backend;
                           }
-
-                              const assetsToSave = []; // 用于批量收集待保存的音频文件
-
-                              // 辅助函数：恢复资源库文件
-                              const restoreLibraryFiles = async (libItems, fileKey) => {
-                                  if (!libItems || !Array.isArray(libItems)) return [];
-                                  const restoredItems = [];
-                                  for (const item of libItems) {
-                                      if (!item) continue;
-                                      if (item._fileData) {
-                                          try {
-                                              // 如果使用了提取器，拿回真实的 base64 数据
-                                              let realBase64 = item._fileData;
-                                              if (realBase64.startsWith('__EXTRACTED_BASE64_')) {
-                                                  const match = realBase64.match(/__EXTRACTED_BASE64_(\d+)__/);
-                                                  if (match) realBase64 = extractedBlobs[parseInt(match[1])];
-                                              }
-
-                                              const blob = base64ToBlob(realBase64, item._mimeType || 'audio/wav');
-                                              const file = new File([blob], item[fileKey], { type: item._mimeType || 'audio/wav' });
-                                              localFileMap.value.set(item[fileKey], file);
-
-                                              // 优化：收集到批量列表，稍后统一保存
-                                              assetsToSave.push({ key: item[fileKey], blob: file });
-
-                                              // 预加载到缓存
-                                              loadAudioBuffer(item[fileKey]);
-
-                                              delete item._fileData;
-                                              delete item._mimeType;
-                                          } catch (err) {
-                                              console.warn(`Failed to restore file: ${item[fileKey]}`, err);
-                                          }
-                                      }
-                                      restoredItems.push(item);
-                                  }
-                                  return restoredItems;
-                              };
-
-                              if (data.version === '2.0' || data.project) {
-                                  // v2.0 完整工程格式
-                                  if (!confirm(translateMessage("检测到完整工程文件。导入将覆盖当前的【资源库和脚本】（模型配置不会被覆盖）。确定继续吗？"))) return;
-
-                                  // --- 清空当前数据 ---
-                                  rawScript.value = '';
-                                  rawAnalysisResult.value = '';
-                                  characters.value = [];
-                                  scriptLines.value = [];
-                                  scriptList.value = [{ id: 'default', name: translateMessage('data.defaultScriptName', { number: 1 }), data: { rawScript: '', scriptLines: [], rawAnalysisResult: '', characters: [] } }];
-                                  sfxLibrary.value = [];
-                                  bgmLibrary.value = [];
-                                  timbres.value = [];
-                                  filterLibrary.value = [];
-                                  emotionPresets.value = [];
-                                  localFileMap.value.clear();
-                                  audioBufferCache.clear();
-
-                                  // 2. 恢复资源库
-                                  if (data.libraries) {
-                                      sfxLibrary.value = (await restoreLibraryFiles(data.libraries.sfx, 'filename')).map(s => ({ ...s, volume: s.volume ?? 0.3 }));
-                                      bgmLibrary.value = (await restoreLibraryFiles(data.libraries.bgm, 'filename')).map(b => ({ ...b, volume: b.volume ?? 0.3 }));
-                                      timbres.value = await restoreLibraryFiles(data.libraries.timbres, 'refPath');
-                                      filterLibrary.value = data.libraries.filters || [];
-                                      emotionPresets.value = data.libraries.emotions || [];
-
-                                      // 恢复情绪库：合并系统预设 + 导入的自定义情绪
-                                      if (data.libraries.emotions && Array.isArray(data.libraries.emotions)) {
-                                          const customImported = data.libraries.emotions.filter(e => !isSystemEmotion(e.name) && Array.isArray(e.vector));
-                                          const systemImported = data.libraries.emotions.filter(e => isSystemEmotion(e.name));
-
-                                          const mergedSystem = SYSTEM_EMOTIONS.map(def => {
-                                              const imported = systemImported.find(s => s.name === def.name);
-                                              return { ...def, enabled: imported ? imported.enabled : undefined };
-                                          });
-
-                                          emotionPresets.value = [...mergedSystem, ...customImported];
-                                      } else {
-                                          emotionPresets.value = [...SYSTEM_EMOTIONS];
-                                      }
-
-                                      // 不再调用 save*ToLocal，因为数据仅在内存中
-
-                                      // 不在启动或导入时自动同步音色到 TTS 服务器。
-                                      // 仅在用户主动点击生成相关按钮时，再按需检查和上传。
-                                  }
-
-                                  // 3. 恢复项目状态
-                                  const proj = data.project;
-                                  characters.value = proj.characters || [];
-                                  characters.value.forEach(c => { if (c.volume === undefined) c.volume = 1.0; });
-
-                                  if (proj.scriptList) {
-                                      scriptList.value = proj.scriptList;
-                                      currentScriptId.value = proj.currentScriptId || scriptList.value[0].id;
-                                  } else {
-                                      // 兼容旧版 v2.0 (如果存在)
-                                      scriptList.value = [{
-                                          id: 'default',
-                                          name: translateMessage('data.defaultScriptName', { number: 1 }),
-                                          data: {
-                                              rawScript: proj.rawScript || '',
-                                              scriptLines: proj.scriptLines || [],
-                                              rawAnalysisResult: proj.rawAnalysisResult || '',
-                                              characters: proj.characters || []
-                                          }
-                                      }];
-                                      currentScriptId.value = 'default';
-                                  }
-
-                                  // 恢复台词音频
-                                  exportStatus.value = translateMessage("恢复台词音频...");
-                                  for (const script of scriptList.value) {
-                                      const lines = script.data.scriptLines || [];
-                                      for (const line of lines) {
-                                          if (!line) continue;
-                                          if (line.audioBase64) {
-                                              try {
-                                                  let realAudioBase64 = line.audioBase64;
-                                                  if (typeof realAudioBase64 === 'string' && realAudioBase64.startsWith('__EXTRACTED_BASE64_')) {
-                                                      const match = realAudioBase64.match(/__EXTRACTED_BASE64_(\d+)__/);
-                                                      if (match) realAudioBase64 = extractedBlobs[parseInt(match[1])];
-                                                  }
-                                                  let blob;
-                                                  if (realAudioBase64.startsWith('data:')) {
-                                                      const parts = realAudioBase64.split(',');
-                                                      const mime = parts[0].match(/:(.*?);/)[1];
-                                                      blob = base64ToBlob(realAudioBase64, mime);
-                                                  } else {
-                                                      const res = await fetch(realAudioBase64);
-                                                      blob = await res.blob();
-                                                  }
-                                                  assetsToSave.push({ key: `line_audio_${line.id}`, blob: blob });
-                                                  if (line.speed === undefined) line.speed = 1.0;
-                                                  line.audioUrl = URL.createObjectURL(blob);
-                                                  delete line.audioBase64;
-                                              } catch (err) { console.warn('Audio restore failed', err); }
-                                          }
-                                          if (line.type === 'bgImage' && line.imageBase64) {
-                                              try {
-                                                  let realImageBase64 = line.imageBase64;
-                                                  if (typeof realImageBase64 === 'string' && realImageBase64.startsWith('__EXTRACTED_BASE64_')) {
-                                                      const match = realImageBase64.match(/__EXTRACTED_BASE64_(\d+)__/);
-                                                      if (match) realImageBase64 = extractedBlobs[parseInt(match[1])];
-                                                  }
-                                                  let blob;
-                                                  if (realImageBase64.startsWith('data:')) {
-                                                      const parts = realImageBase64.split(',');
-                                                      const mime = parts[0].match(/:(.*?);/)[1];
-                                                      blob = base64ToBlob(realImageBase64, mime);
-                                                  } else {
-                                                      const res = await fetch(realImageBase64);
-                                                      blob = await res.blob();
-                                                  }
-                                                  const bgKey = line.bgImageAssetKey || `bgImage_${line.id}`;
-                                                  line.bgImageAssetKey = bgKey;
-                                                  assetsToSave.push({ key: bgKey, blob: blob });
-                                                  line.imageUrl = URL.createObjectURL(blob);
-                                                  delete line.imageBase64;
-                                                  // imageMimeType 将由 blob.type 自动带入
-                                              } catch (err) { console.warn('Image restore failed', err); }
-                                          }
-                                      }
-                                  }
-
-                                  // 加载当前脚本
-                                  const active = scriptList.value.find(s => s.id === currentScriptId.value);
-                                  if (active) {
-                                      rawScript.value = active.data.rawScript;
-                                      scriptLines.value = active.data.scriptLines;
-                                      rawAnalysisResult.value = active.data.rawAnalysisResult;
-                                      characters.value = active.data.characters || [];
-                                      characters.value.forEach(c => { if (c.volume === undefined) c.volume = 1.0; });
-                                  }
-
-                                  // 执行批量保存 (一次性写入所有文件)
-                                  exportStatus.value = translateMessage("写入数据库...");
-                                  if (assetsToSave.length > 0) {
-                                      try {
-                                          await saveAssetsBatch(assetsToSave);
-                                      } catch (e) {
-                                          console.error("Asset save failed:", e);
-                                          throw e;
-                                      }
-                                  }
-
-                                  // 强制保存一次项目状态到 DB，确保 JSON 数据也同步
-                                  await saveProjectToDB();
-
-                                  alert(translateMessage("完整工程导入成功！所有资源和设置已恢复。"));
-
-                              } else if (data.scriptLines && Array.isArray(data.scriptLines)) {
-                                  // v1.x 旧版存档格式兼容
-                                  if (confirm(translateMessage("检测到旧版存档。确定要读取吗？当前未保存的进度将被覆盖。"))) {
-                                      // 修复：先清空角色列表，防止残留
-                                      characters.value = [];
-
-                                      if (data.rawScript !== undefined) rawScript.value = data.rawScript;
-                                      if (data.rawAnalysisResult !== undefined) rawAnalysisResult.value = data.rawAnalysisResult;
-
-                                      // 修复：读取存档时，如果存档包含角色列表则直接使用，否则根据台词重建角色列表
-                                      // 这样可以确保“没有的角色要删除”，并且“角色的音色选用也要保存”
-                                      if (data.characters && Array.isArray(data.characters)) {
-                                          characters.value = data.characters;
-                                          characters.value.forEach(c => { if (c.volume === undefined) c.volume = 1.0; });
-                                      } else {
-                                          // 兼容旧存档：从台词中提取角色
-                                          const roles = new Set();
-                                          data.scriptLines.forEach(l => {
-                                              if (l.type === 'dialogue' && l.role) roles.add(l.role);
-                                          });
-                                          characters.value = Array.from(roles).map(r => {
-                                              const matchingTimbre = timbres.value.find(t => t.name === r);
-                                              return {
-                                                  id: Date.now() + Math.random().toString(),
-                                                  name: r,
-                                                  voiceFile: matchingTimbre ? matchingTimbre.refPath : '',
-                                                  volume: 1.0
-                                              };
-                                          });
-                                      }
-
-                                      // 恢复音频数据 (Base64 -> Blob URL)
-                                      exportStatus.value = translateMessage("恢复旧版数据...");
-
-                                      // 初始化脚本列表
-                                      scriptList.value = [{
-                                          id: 'default',
-                                          name: translateMessage('data.defaultScriptName', { number: 1 }),
-                                          data: { rawScript: rawScript.value, scriptLines: [], rawAnalysisResult: rawAnalysisResult.value }
-                                      }];
-                                      currentScriptId.value = 'default';
-                                      const activeScriptData = scriptList.value[0].data;
-                                      const restoredLines = [];
-
-                                      for (const line of data.scriptLines) {
-                                          // 兼容性修复：确保必要字段存在
-                                          if (!line.id) line.id = Date.now().toString() + '_' + Math.random().toString(36).substr(2, 9);
-                                          if (!line.type) line.type = 'dialogue';
-                                          if (line.trimStart === undefined) line.trimStart = 0;
-                                          if (line.trimEnd === undefined) line.trimEnd = 1;
-                                          if (line.speed === undefined) line.speed = 1.0;
-
-                                          // 兼容旧版音量字段
-                                          if (line.type === 'dialogue') {
-                                              if (line.dialogueVolume === undefined && line.volume !== undefined) line.dialogueVolume = line.volume;
-                                              if (line.dialogueVolume === undefined) line.dialogueVolume = 1.0;
-                                          }
-
-                                          if (line.audioBase64) {
-                                              try {
-                                                  const res = await fetch(line.audioBase64);
-                                                  const blob = await res.blob();
-
-                                                  // 优化：收集到批量列表
-                                                  assetsToSave.push({ key: `line_audio_${line.id}`, blob: blob });
-
-                                                  line.audioUrl = URL.createObjectURL(blob);
-                                                  // delete line.audioBase64; // 可选：释放内存，但保留在对象中也没关系
-                                              } catch (err) {
-                                                  console.warn('恢复音频失败:', line.id, err);
-                                              }
-                                          }
-                                          restoredLines.push(line);
-                                      }
-
-                                      activeScriptData.scriptLines = restoredLines;
-                                      scriptLines.value = restoredLines; // Sync to view
-
-                                      exportStatus.value = translateMessage("保存中...");
-                                      if (assetsToSave.length > 0) {
-                                          try {
-                                          await saveAssetsBatch(assetsToSave);
-                                      } catch (e) {
-                                          console.error("Asset save failed:", e);
-                                          throw e;
-                                          }
-                                      }
-                                      await saveProjectToDB();
-                                      alert(translateMessage("存档读取成功！"));
-                                  }
-                              } else {
-                                  alert(translateMessage("无效的存档文件格式"));
-                              }
-                          } catch (err) {
-                              console.error('导入工程失败:', err);
-                              rawScript.value = previousState.rawScript;
-                              rawAnalysisResult.value = previousState.rawAnalysisResult;
-                              characters.value = previousState.characters;
-                              scriptLines.value = previousState.scriptLines;
-                              scriptList.value = previousState.scriptList;
-                              currentScriptId.value = previousState.currentScriptId;
-                              sfxLibrary.value = previousState.sfxLibrary;
-                              bgmLibrary.value = previousState.bgmLibrary;
-                              timbres.value = previousState.timbres;
-                              filterLibrary.value = previousState.filterLibrary;
-                              emotionPresets.value = previousState.emotionPresets;
-                              localFileMap.value = previousState.localFiles;
-                              exportStatus.value = translateMessage("导入失败: {0}", { 0: err.message });
-                              alert(translateMessage("导入失败: {0}\n请打开控制台查看详细报错。", { 0: err.message }));
-                          } finally {
-                              isRestoring.value = false;
-                              isExportingProject.value = false;
-                              exportStatus.value = '';
-                          }
-                          event.target.value = ''; // Reset
+                          alert(translateMessage('导入失败: {0}', { 0: error.message }));
+                      } finally {
+                          isRestoring.value = false;
+                          isExportingProject.value = false;
+                          exportStatus.value = '';
+                      }
                   };
 
                   const triggerImportTxt = () => {
@@ -2668,192 +2536,169 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       event.target.value = '';
                   };
 
-                  // --- 导出音频逻辑 (WAV) ---
+                  // --- Bounded WAV export: render at most two minutes at a time ---
                   const exportAudio = async () => {
-                      const dialogueLines = scriptLines.value.filter(l => l.type === 'dialogue');
-                      if (dialogueLines.length === 0) return alert(translateMessage("脚本为空"));
-                      if (dialogueLines.some(l => !l.audioUrl)) {
-                          if (!confirm(translateMessage("部分台词尚未生成音频，导出时将被跳过。确定继续吗？"))) return;
-                      }
+                      const dialogueLines = scriptLines.value.filter(line => line.type === 'dialogue');
+                      if (!dialogueLines.length) return alert(translateMessage('脚本为空'));
+                      if (dialogueLines.some(line => !line.audioUrl) &&
+                          !confirm(translateMessage('部分台词尚未生成音频，导出时将被跳过。确定继续吗？'))) return;
 
-                      isExportingAudio.value = true;
-
+                      let writable = null;
                       try {
-                          const assets = { processedDialogues: {}, dialogueTimings: {}, sfx: {}, bgm: {} };
-
-                          // 1. 加载所有台词音频
-                          for (const line of dialogueLines) {
-                              if (line.audioUrl) {
-                                  assets.processedDialogues[line.id] = await getProcessedDialogueBuffer(line);
-                                  assets.dialogueTimings[line.id] = await getDialogueTimingInfo(line);
-                              }
+                          if (window.showSaveFilePicker) {
+                              const handle = await window.showSaveFilePicker({
+                                  suggestedName: `Unitale_${Date.now()}.wav`,
+                                  types: [{ description: 'WAV audio', accept: { 'audio/wav': ['.wav'] } }]
+                              });
+                              writable = await handle.createWritable();
                           }
-
-                          // 2. 加载用到的音效
-                          const usedSfxNames = new Set();
-                          scriptLines.value.forEach(l => { if (l.sfx) l.sfx.forEach(s => usedSfxNames.add(s.name)); });
-                          for (const name of usedSfxNames) {
-                              const item = sfxLibrary.value.find(s => s.name === name);
-                              if (item && item.filename) {
-                                  try { assets.sfx[name] = await loadAudioBuffer(item.filename); } catch (e) { }
-                              }
-                          }
-
-                          // 3. 加载用到的 BGM
-                          const usedBgmNames = new Set();
-                          scriptLines.value.forEach(l => { if (l.type === 'bgm' && l.action === 'play') usedBgmNames.add(l.bgmName); });
-                          for (const name of usedBgmNames) {
-                              const item = bgmLibrary.value.find(b => b.name === name);
-                              if (item && item.filename) {
-                                  try { assets.bgm[name] = await loadAudioBuffer(item.filename); } catch (e) { }
-                              }
-                          }
-
-                          // 4. 计算时间轴
-                          let currentTime = 0;
+                      } catch (error) {
+                          if (error?.name === 'AbortError') return;
+                          console.warn('Streaming file picker unavailable; downloading numbered WAV parts', error);
+                      }
+                      isExportingAudio.value = true;
+                      try {
                           const events = [];
                           const bgmSegments = [];
+                          let currentTime = 0;
                           let currentBgm = null;
-
                           for (const line of scriptLines.value) {
                               if (line.type === 'bgm') {
                                   if (line.action === 'play') {
                                       if (currentBgm) bgmSegments.push({ ...currentBgm, end: currentTime });
                                       currentBgm = { name: line.bgmName, start: currentTime, volume: line.volume };
-                                  } else if (line.action === 'stop') {
-                                      if (currentBgm) {
-                                          bgmSegments.push({ ...currentBgm, end: currentTime });
-                                          currentBgm = null;
-                                      }
+                                  } else if (line.action === 'stop' && currentBgm) {
+                                      bgmSegments.push({ ...currentBgm, end: currentTime });
+                                      currentBgm = null;
                                   }
                               } else if (line.type === 'dialogue') {
-                                  const processedBuffer = assets.processedDialogues[line.id];
-                                  const timingInfo = assets.dialogueTimings[line.id];
-                                  if (processedBuffer && timingInfo) {
-                                      // 模拟 playLineAudio 中的 0.05s 调度延迟，确保导出节奏与实时播放一致
-                                      currentTime += 0.05;
-                                      events.push({
-                                          type: 'dialogue',
-                                          time: currentTime,
-                                          buffer: processedBuffer,
-                                          duration: timingInfo.effectiveDuration,
-                                          line: line
-                                      });
-                                      currentTime += timingInfo.effectiveDuration;
+                                  if (line.audioUrl) {
+                                      const timing = await getDialogueTimingInfo(line);
+                                      if (timing) {
+                                          currentTime += 0.05;
+                                          events.push({ line, time: currentTime, duration: timing.effectiveDuration });
+                                          currentTime += timing.effectiveDuration;
+                                      }
                                   }
-                                  currentTime += (line.break_duration || 0);
+                                  currentTime += Number(line.break_duration) || 0;
                               }
                           }
-                          if (currentBgm) bgmSegments.push({ ...currentBgm, end: currentTime + EXPORT_TAIL_PADDING_SEC });
-
-                          // 5. 离线渲染
                           const totalDuration = currentTime + EXPORT_TAIL_PADDING_SEC;
-                          const offlineCtx = new OfflineAudioContext(2, totalDuration * 44100, 44100);
+                          if (currentBgm) bgmSegments.push({ ...currentBgm, end: totalDuration });
+                          const sampleRate = 44100;
+                          const totalFrames = Math.ceil(totalDuration * sampleRate);
+                          const framesPerPart = AUDIO_EXPORT_PART_SECONDS * sampleRate;
+                          const canStreamSingle = writable && totalFrames * 4 <= WAV_MAX_DATA_BYTES;
+                          if (writable && !canStreamSingle) {
+                              await writable.abort();
+                              writable = null;
+                          }
+                          if (canStreamSingle) await writable.write(makeWavHeader(totalFrames, sampleRate, 2));
 
-                          // 调度 BGM
-                          bgmSegments.forEach(seg => {
-                              const buffer = assets.bgm[seg.name];
-                              if (buffer) {
-                                  const libItem = bgmLibrary.value.find(b => b.name === seg.name);
-                                  const libVol = libItem ? (libItem.volume ?? 1.0) : 1.0;
-                                  const finalVol = seg.volume * libVol;
-
-                                  const src = offlineCtx.createBufferSource();
-                                  src.buffer = buffer;
-                                  src.loop = true;
-                                  const trimStart = libItem?.trimStart ?? 0;
-                                  const trimEnd = libItem?.trimEnd ?? 1;
-                                  src.loopStart = buffer.duration * trimStart;
-                                  src.loopEnd = buffer.duration * trimEnd;
-
-                                  const gain = offlineCtx.createGain();
-                                  gain.gain.setValueAtTime(0, seg.start);
-                                  gain.gain.linearRampToValueAtTime(finalVol, seg.start + 2);
-                                  gain.gain.setValueAtTime(finalVol, Math.max(seg.start + 2, seg.end - 2));
-                                  gain.gain.linearRampToValueAtTime(0, seg.end);
-                                  src.connect(gain).connect(offlineCtx.destination);
-                                  src.start(seg.start, src.loopStart); // Start from loop start
-                                  src.stop(seg.end);
-                              }
-                          });
-
-                          // 调度台词和音效
-                          events.forEach(evt => {
-                              const dSrc = offlineCtx.createBufferSource();
-                              dSrc.buffer = evt.buffer;
-                              const dGain = offlineCtx.createGain();
-                              const char = characters.value.find(c => c.name === evt.line.role);
-                              const charVol = char ? (char.volume ?? 1.0) : 1.0;
-                              dGain.gain.value = (evt.line.dialogueVolume ?? 1.0) * charVol;
-
-                              let lastNode = dSrc;
-                              // 应用滤镜
-                              if (evt.line.filter) {
-                                  const fConfig = filterLibrary.value.find(f => f.name === evt.line.filter);
-                                  if (fConfig) {
-                                      if (fConfig.type === 'distortion') {
-                                          const ws = offlineCtx.createWaveShaper();
-                                          ws.curve = makeDistortionCurve(fConfig.gain);
-                                          ws.oversample = '4x';
-                                          lastNode.connect(ws);
-                                          lastNode = ws;
-                                      } else {
-                                          const bq = offlineCtx.createBiquadFilter();
-                                          bq.type = fConfig.type;
-                                          bq.frequency.value = fConfig.frequency;
-                                          bq.Q.value = fConfig.Q;
-                                          lastNode.connect(bq);
-                                          lastNode = bq;
-                                      }
-                                  }
-                              }
-                              lastNode.connect(dGain).connect(offlineCtx.destination);
-                              dSrc.start(evt.time, 0, Math.min(evt.buffer.duration, evt.duration));
-
-                              // 调度音效
-                              if (evt.line.sfx) {
-                                  evt.line.sfx.forEach(s => {
-                                      const sBuffer = assets.sfx[s.name];
-                                      if (sBuffer) {
-                                          const pos = parseFloat(s.position) || 0;
-                                          const clampedPos = Math.max(0, Math.min(1, pos));
-                                          const sfxTime = evt.time + (evt.duration * clampedPos);
-                                          if (Number.isFinite(sfxTime)) {
-                                              const sSrc = offlineCtx.createBufferSource();
-                                              sSrc.buffer = sBuffer;
-                                              const sGain = offlineCtx.createGain();
-                                              const libItem = sfxLibrary.value.find(l => l.name === s.name);
-                                              const libVol = libItem ? (libItem.volume ?? 1.0) : 1.0;
-                                              const scriptVol = evt.line.sfxVolume ?? 0.5;
-                                              sGain.gain.value = scriptVol * libVol;
-
-                                              const sTrimStart = libItem?.trimStart ?? 0;
-                                              const sTrimEnd = libItem?.trimEnd ?? 1;
-                                              const sOffset = sBuffer.duration * sTrimStart;
-                                              const sDuration = sBuffer.duration * (sTrimEnd - sTrimStart);
-
-                                              sSrc.connect(sGain).connect(offlineCtx.destination);
-                                              sSrc.start(sfxTime, sOffset, sDuration);
+                          const renderPart = async (startFrame, frameCount) => {
+                              const start = startFrame / sampleRate;
+                              const end = (startFrame + frameCount) / sampleRate;
+                              const ctx = new OfflineAudioContext(2, frameCount, sampleRate);
+                              const scheduleFilter = (source, line, gain) => {
+                                  let last = source;
+                                  if (line.filter) {
+                                      const setting = filterLibrary.value.find(item => item.name === line.filter);
+                                      if (setting) {
+                                          if (setting.type === 'distortion') {
+                                              const node = ctx.createWaveShaper();
+                                              node.curve = makeDistortionCurve(setting.gain);
+                                              node.oversample = '4x';
+                                              last.connect(node);
+                                              last = node;
+                                          } else {
+                                              const node = ctx.createBiquadFilter();
+                                              node.type = setting.type;
+                                              node.frequency.value = setting.frequency;
+                                              node.Q.value = setting.Q;
+                                              last.connect(node);
+                                              last = node;
                                           }
                                       }
-                                  });
+                                  }
+                                  last.connect(gain).connect(ctx.destination);
+                              };
+                              for (const seg of bgmSegments) {
+                                  if (seg.end <= start || seg.start >= end) continue;
+                                  const item = bgmLibrary.value.find(value => value.name === seg.name);
+                                  if (!item?.filename) continue;
+                                  const buffer = await loadAudioBuffer(item.assetId ? `asset:${item.assetId}` : item.filename);
+                                  if (!buffer) continue;
+                                  const overlapStart = Math.max(start, seg.start);
+                                  const overlapEnd = Math.min(end, seg.end);
+                                  const src = ctx.createBufferSource();
+                                  src.buffer = buffer;
+                                  src.loop = true;
+                                  src.loopStart = buffer.duration * (item.trimStart ?? 0);
+                                  src.loopEnd = buffer.duration * (item.trimEnd ?? 1);
+                                  const loopLength = Math.max(0.01, src.loopEnd - src.loopStart);
+                                  const offset = src.loopStart + ((overlapStart - seg.start) % loopLength);
+                                  const gain = ctx.createGain();
+                                  const volume = (seg.volume ?? 1) * (item.volume ?? 1);
+                                  const envelope = t => volume * Math.max(0, Math.min(1, (t - seg.start) / 2, (seg.end - t) / 2));
+                                  gain.gain.setValueAtTime(envelope(overlapStart), overlapStart - start);
+                                  const knots = [seg.start + 2, seg.end - 2, overlapEnd]
+                                      .filter(t => t > overlapStart && t <= overlapEnd).sort((x, y) => x - y);
+                                  for (const knot of knots) gain.gain.linearRampToValueAtTime(envelope(knot), knot - start);
+                                  src.connect(gain).connect(ctx.destination);
+                                  src.start(overlapStart - start, offset);
+                                  src.stop(overlapEnd - start);
                               }
-                          });
-
-                          const renderedBuffer = await offlineCtx.startRendering();
-                          const wavBlob = bufferToWave(renderedBuffer, renderedBuffer.length);
-                          const url = URL.createObjectURL(wavBlob);
-                          const a = document.createElement('a');
-                          a.href = url;
-                          a.download = `storyforge_export_${Date.now()}.wav`;
-                          document.body.appendChild(a);
-                          a.click();
-                          document.body.removeChild(a);
-                          URL.revokeObjectURL(url);
-
-                      } catch (e) {
-                          console.error(e);
-                          alert(translateMessage("导出失败: {0}", { 0: e.message }));
+                              for (const evt of events) {
+                                  if (evt.time + evt.duration <= start || evt.time >= end) continue;
+                                  const buffer = await getProcessedDialogueBuffer(evt.line);
+                                  if (!buffer) continue;
+                                  const overlapStart = Math.max(start, evt.time);
+                                  const overlapEnd = Math.min(end, evt.time + evt.duration);
+                                  const src = ctx.createBufferSource();
+                                  src.buffer = buffer;
+                                  const gain = ctx.createGain();
+                                  const character = characters.value.find(value => value.name === evt.line.role);
+                                  gain.gain.value = (evt.line.dialogueVolume ?? 1) * (character?.volume ?? 1);
+                                  scheduleFilter(src, evt.line, gain);
+                                  src.start(overlapStart - start, overlapStart - evt.time, overlapEnd - overlapStart);
+                                  for (const effect of evt.line.sfx || []) {
+                                      const position = Math.max(0, Math.min(1, Number(effect.position) || 0));
+                                      const effectStart = evt.time + evt.duration * position;
+                                      const item = sfxLibrary.value.find(value => value.name === effect.name);
+                                      if (!item?.filename) continue;
+                                      const sound = await loadAudioBuffer(item.assetId ? `asset:${item.assetId}` : item.filename);
+                                      if (!sound) continue;
+                                      const offset = sound.duration * (item.trimStart ?? 0);
+                                      const effectEnd = effectStart + sound.duration * ((item.trimEnd ?? 1) - (item.trimStart ?? 0));
+                                      const playStart = Math.max(start, effectStart);
+                                      const playEnd = Math.min(end, effectEnd);
+                                      if (playEnd <= playStart) continue;
+                                      const sfxSource = ctx.createBufferSource();
+                                      sfxSource.buffer = sound;
+                                      const sfxGain = ctx.createGain();
+                                      sfxGain.gain.value = (evt.line.sfxVolume ?? 0.5) * (item.volume ?? 1);
+                                      sfxSource.connect(sfxGain).connect(ctx.destination);
+                                      sfxSource.start(playStart - start, offset + playStart - effectStart, playEnd - playStart);
+                                  }
+                              }
+                              return bufferToWave(await ctx.startRendering(), frameCount);
+                          };
+                          const ranges = frameRanges(totalFrames, framesPerPart);
+                          const count = ranges.length;
+                          for (let part = 0; part < count; part++) {
+                              const { start: startFrame, count: frameCount } = ranges[part];
+                              const blob = await renderPart(startFrame, frameCount);
+                              if (canStreamSingle) {
+                                  await writable.write(blob.slice(44));
+                              } else {
+                                  downloadArchivePart({ name: `Unitale_${currentScriptId.value}_${String(part + 1).padStart(3, '0')}-of-${String(count).padStart(3, '0')}.wav`, blob });
+                              }
+                          }
+                          if (canStreamSingle) await writable.close();
+                      } catch (error) {
+                          if (writable) try { await writable.abort(); } catch { /* keep rendering error */ }
+                          console.error(error);
+                          alert(translateMessage('导出失败: {0}', { 0: error.message }));
                       } finally {
                           isExportingAudio.value = false;
                       }
@@ -3056,6 +2901,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           .map(l => l.trim())
                           .filter(l => l.length > 0);
 
+                      collectOrphansAfterSave = true;
                       scriptLines.value = lines.map(text => ({
                           id: Date.now().toString() + '_' + Math.random().toString(36).substr(2, 9),
                           type: 'dialogue',
@@ -3139,6 +2985,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   };
 
                   const removeScriptLine = (index) => {
+                      if (scriptLines.value[index]?.audioAssetId || scriptLines.value[index]?.bgImageAssetId) collectOrphansAfterSave = true;
                       scriptLines.value.splice(index, 1);
                       if (selectedLineIndex.value === index) {
                           selectedLineIndex.value = -1;
@@ -3162,12 +3009,12 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       const line = scriptLines.value[lineIndex];
                       if (!line || line.type !== 'bgImage') return;
 
-                      const assetKey = line.bgImageAssetKey || `bgImage_${line.id}`;
-                      line.bgImageAssetKey = assetKey;
-                      line.imageUrl = URL.createObjectURL(file);
-
                       try {
-                          await saveAssetToDB(assetKey, file);
+                          const saved = await activeAssetStore.put(file, { projectId: activeProjectId.value, kind: 'backgroundImage' });
+                          if (line.bgImageAssetId) collectOrphansAfterSave = true;
+                          objectUrls.release(mediaOwner(currentScriptId.value, line, 'imageUrl'));
+                          line.bgImageAssetId = saved.id;
+                          line.imageUrl = objectUrls.create(mediaOwner(currentScriptId.value, line, 'imageUrl'), file);
                       } catch (e) {
                           console.error('Failed to save bgImage asset:', e);
                           alert(translateMessage("保存背景图片失败，请重试。"));
@@ -3267,7 +3114,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       }
 
                       try {
-                          const audioBuffer = await loadAudioBuffer(bgmLibItem.filename);
+                          const audioBuffer = await loadAudioBuffer(bgmLibItem.assetId ? `asset:${bgmLibItem.assetId}` : bgmLibItem.filename);
                           if (!audioBuffer) throw new Error('Load failed');
 
                           bgmAudioNode = audioContext.createBufferSource();
@@ -3405,276 +3252,140 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       stopScriptSequentially();
                   };
 
-                  // --- 视频生成（MP4 离线合成） ---
-  const generateVideo = async () => {
-                      const dialogueLines = scriptLines.value.filter(l => l.type === 'dialogue');
-                      if (dialogueLines.length === 0) return alert(translateMessage("脚本为空"));
-
-                      if (dialogueLines.some(l => !l.audioUrl)) {
-                          if (!confirm(translateMessage("部分台词尚未生成音频，导出视频时将跳过未生成的台词。确定继续吗？"))) return;
-                      }
-
+                  // --- Bounded MP4 export: numbered segments of at most two minutes ---
+                  const generateVideo = async () => {
+                      const dialogueLines = scriptLines.value.filter(line => line.type === 'dialogue');
+                      if (!dialogueLines.length) return alert(translateMessage('脚本为空'));
+                      if (dialogueLines.some(line => !line.audioUrl) &&
+                          !confirm(translateMessage('部分台词尚未生成音频，导出视频时将跳过未生成的台词。确定继续吗？'))) return;
                       if (typeof VideoEncoder === 'undefined') {
-                          return alert(translateMessage("当前浏览器不支持 WebCodecs API，无法快速导出视频。请使用最新版 Chrome 或 Edge。"));
+                          return alert(translateMessage('当前浏览器不支持 WebCodecs API，无法快速导出视频。请使用最新版 Chrome 或 Edge。'));
                       }
                       const Mp4Muxer = getMp4Muxer();
-                    if (!Mp4Muxer) {
-                          return alert(translateMessage("缺少 Mp4Muxer 库，无法导出 MP4。"));
-                      }
-
+                      if (!Mp4Muxer) return alert(translateMessage('缺少 Mp4Muxer 库，无法导出 MP4。'));
                       isGeneratingVideo.value = true;
-                      exportStatus.value = translateMessage("准备素材...");
-
+                      exportStatus.value = translateMessage('准备素材...');
                       try {
-                          const dialogueTimings = new Map();
-
-                          // 1. 加载所有台词时长信息
+                          const durations = new Map();
                           for (const line of dialogueLines) {
-                              if (line.audioUrl) {
-                                  const timingInfo = await getDialogueTimingInfo(line);
-                                  if (timingInfo) dialogueTimings.set(line.id, timingInfo);
-                              }
+                              if (!line.audioUrl) continue;
+                              const timing = await getDialogueTimingInfo(line);
+                              if (timing) durations.set(line.id, timing.effectiveDuration);
                           }
-
-                          // 2. 加载背景图片
-                          const bgUrls = Array.from(new Set(
-                              scriptLines.value.filter(l => l.type === 'bgImage' && l.imageUrl).map(l => l.imageUrl)
-                          ));
-                          const bgImageCache = new Map();
-                          for (const url of bgUrls) {
-                              const img = new Image();
-                              img.crossOrigin = 'anonymous';
-                              await new Promise((resolve) => {
-                                  img.onload = resolve;
-                                  img.onerror = resolve;
-                                  img.src = url;
-                              });
-                              bgImageCache.set(url, img);
-                          }
-
-                          // 3. 用与音频导出一致的时长规则计算视频时间轴
-                          let currentTime = 0;
-                          const visualTimeline = [];
-                          let currentBgUrl = '';
-                          let lastBgChangeTime = 0;
-
-                          // 初始化首个背景
-                          const firstBgLine = scriptLines.value.find(l => l.type === 'bgImage' && l.imageUrl);
-                          if (firstBgLine) currentBgUrl = firstBgLine.imageUrl;
-
+                          let time = 0;
+                          let background = '';
+                          let backgroundStart = 0;
+                          const visuals = [];
+                          const first = scriptLines.value.find(line => line.type === 'bgImage' && line.imageUrl);
+                          if (first) background = first.imageUrl;
                           for (const line of scriptLines.value) {
-                              if (line.type === 'bgImage') {
-                                  if (line.imageUrl && line.imageUrl !== currentBgUrl) {
-                                      if (currentTime > lastBgChangeTime) {
-                                          visualTimeline.push({
-                                              url: currentBgUrl,
-                                              start: lastBgChangeTime,
-                                              end: currentTime
-                                          });
-                                      }
-                                      currentBgUrl = line.imageUrl;
-                                      lastBgChangeTime = currentTime;
-                                  }
+                              if (line.type === 'bgImage' && line.imageUrl && line.imageUrl !== background) {
+                                  if (time > backgroundStart) visuals.push({ url: background, start: backgroundStart, end: time });
+                                  background = line.imageUrl;
+                                  backgroundStart = time;
                               } else if (line.type === 'dialogue') {
-                                  const timingInfo = dialogueTimings.get(line.id);
-                                  if (timingInfo) {
-                                      currentTime += 0.05;
-                                      currentTime += timingInfo.effectiveDuration;
-                                  }
-                                  currentTime += (line.break_duration || 0);
+                                  const duration = durations.get(line.id);
+                                  if (duration) time += 0.05 + duration;
+                                  time += Number(line.break_duration) || 0;
                               }
                           }
-                          if (currentTime > lastBgChangeTime) {
-                              visualTimeline.push({
-                                  url: currentBgUrl,
-                                  start: lastBgChangeTime,
-                                  end: currentTime
-                              });
-                          }
-
-                          exportStatus.value = translateMessage("生成视频轨道...");
-
+                          const totalDuration = time + EXPORT_TAIL_PADDING_SEC;
+                          visuals.push({ url: background, start: backgroundStart, end: totalDuration });
                           const fps = 4;
-                          const totalDuration = currentTime + EXPORT_TAIL_PADDING_SEC;
+                          const totalFrames = Math.ceil(totalDuration * fps);
+                          const framesPerPart = 120 * fps;
+                          const count = Math.ceil(totalFrames / framesPerPart);
                           let [width, height] = videoResolution.value.split('x').map(Number);
-
-                          // Ensure width and height are even numbers (required by many hardware encoders)
-                          width = width % 2 === 0 ? width : width + 1;
-                          height = height % 2 === 0 ? height : height + 1;
-
-                          const muxer = new Mp4Muxer.Muxer({
-                              target: new Mp4Muxer.ArrayBufferTarget(),
-                              video: { codec: 'avc', width, height },
-                              fastStart: 'in-memory'
+                          width += width % 2;
+                          height += height % 2;
+                          const canvas = new OffscreenCanvas(width, height);
+                          const ctx = canvas.getContext('2d', { alpha: false });
+                          ctx.imageSmoothingEnabled = true;
+                          ctx.imageSmoothingQuality = 'high';
+                          const loadImage = url => new Promise(resolve => {
+                              if (!url) return resolve(null);
+                              const image = new Image();
+                              image.onload = () => resolve(image);
+                              image.onerror = () => resolve(null);
+                              image.src = url;
                           });
-
-                          let videoEncoder;
-
-                          const encodeErrorPromise = new Promise((_, reject) => {
-                              videoEncoder = new VideoEncoder({
-                                  output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
-                                  error: e => {
-                                      console.error('VideoEncoder error:', e);
-                                      reject(new Error(translateMessage("视频编码错误: {0}", { 0: e.message })));
-                                  }
+                          let visualIndex = 0;
+                          for (let part = 0; part < count; part++) {
+                              const firstFrame = part * framesPerPart;
+                              const partFrames = Math.min(framesPerPart, totalFrames - firstFrame);
+                              const muxer = new Mp4Muxer.Muxer({
+                                  target: new Mp4Muxer.ArrayBufferTarget(),
+                                  video: { codec: 'avc', width, height },
+                                  fastStart: 'in-memory'
                               });
-
-                          });
-
-                          // Dynamically choose codec profile based on resolution.                        // 1080p (1920x1080 or 1080x1920) typically needs Level 4.2 (avc1.64002A) or Level 4.0.
-                          let codecString = 'avc1.4d002a'; // Main Profile，静态高清图更不容易出马赛克
-
-                          const config = {
-                              codec: codecString,
-                              width, height,
-                              bitrate: 3_000_000,
-                              framerate: fps,
-                              hardwareAcceleration: "prefer-hardware"
-                          };
-
-                          try {
-                              const support = await VideoEncoder.isConfigSupported(config);
-                              if (!support.supported) {
-                                  console.warn("Video configuration not supported by hardware, trying software/baseline fallback...");
-                                  config.codec = 'avc1.42002a'; // Fallback to Baseline Profile Level 4.2
-                                  config.hardwareAcceleration = "no-preference";
-
-                                  const fallbackSupport = await VideoEncoder.isConfigSupported(config);
-                                  if (!fallbackSupport.supported) {
-                                      // Extreme fallback
-                                      config.codec = 'avc1.42001f'; // Baseline 3.1
-                                  }
-                              }
-                          } catch (e) {
-                              console.warn("Failed to check video config support, using default", e);
-                              config.codec = 'avc1.42002a'; // Fallback to Baseline Profile Level 4.2 on error
-                              config.hardwareAcceleration = "no-preference";
-                          }
-
-                          videoEncoder.configure(config);
-
-                          // Yield to the event loop to allow the encoders' configuration tasks to complete.
-                          await new Promise(r => setTimeout(r, 0));
-
-                          const renderVideoPromise = async () => {
-                              const offscreenCanvas = new OffscreenCanvas(width, height);
-                              const offscreenCtx = offscreenCanvas.getContext('2d', { alpha: false });
-                              offscreenCtx.imageSmoothingEnabled = true;
-                              offscreenCtx.imageSmoothingQuality = 'high';
-                              const drawCover = (ctx, img, cw, ch) => {
-                                  const scale = Math.max(cw / img.width, ch / img.height);
-                                  const dw = img.width * scale;
-                                  const dh = img.height * scale;
-                                  const dx = (cw - dw) / 2;
-                                  const dy = (ch - dh) / 2;
-                                  ctx.drawImage(img, dx, dy, dw, dh);
+                              let encoderError = null;
+                              const encoder = new VideoEncoder({
+                                  output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+                                  error: error => { encoderError = error; }
+                              });
+                              const config = {
+                                  codec: 'avc1.4d002a', width, height, bitrate: 3_000_000,
+                                  framerate: fps, hardwareAcceleration: 'prefer-hardware'
                               };
-
-                              const segments = visualTimeline
-                                  .filter(stage => stage && stage.end > stage.start)
-                                  .map((stage, index, arr) => {
-                                      const stageEnd = index === arr.length - 1 ? totalDuration : stage.end;
-                                      return {
-                                          url: stage.url || '',
-                                          startUs: Math.round(stage.start * 1000000),
-                                          durationUs: Math.max(1, Math.round((stageEnd - stage.start) * 1000000))
-                                      };
-                                  });
-
-                              if (segments.length === 0) {
-                                  segments.push({
-                                      url: '',
-                                      startUs: 0,
-                                      durationUs: Math.max(1, Math.round(totalDuration * 1000000))
-                                  });
-                              }
-
-                              const frameDurationUs = Math.round(1000000 / fps);
-                              const totalFrames = segments.reduce((sum, stage) => {
-                                  return sum + Math.max(1, Math.ceil(stage.durationUs / frameDurationUs));
-                              }, 0);
-                              let encodedFrames = 0;
-
-                              for (let i = 0; i < segments.length; i++) {
-                                  const stage = segments[i];
-                                  const currentUrl = stage.url;
-
-                                  offscreenCtx.fillStyle = '#000';
-                                  offscreenCtx.fillRect(0, 0, width, height);
-
-                                  if (currentUrl && bgImageCache.has(currentUrl)) {
-                                      const img = bgImageCache.get(currentUrl);
-                                      drawCover(offscreenCtx, img, width, height);
+                              try {
+                                  if (!(await VideoEncoder.isConfigSupported(config)).supported) {
+                                      config.codec = 'avc1.42002a';
+                                      config.hardwareAcceleration = 'no-preference';
                                   }
-
-                                  while (videoEncoder.encodeQueueSize > 30) {
-                                      if (videoEncoder.state !== 'configured') {
-                                          break;
+                                  encoder.configure(config);
+                                  let lastUrl = null;
+                                  let image = null;
+                                  for (let frameIndex = 0; frameIndex < partFrames; frameIndex++) {
+                                      const globalFrame = firstFrame + frameIndex;
+                                      const frameTime = globalFrame / fps;
+                                      while (visualIndex + 1 < visuals.length && frameTime >= visuals[visualIndex].end) visualIndex++;
+                                      const visual = visuals[visualIndex];
+                                      const url = visual?.url || '';
+                                      const imageChanged = url !== lastUrl;
+                                      if (imageChanged) {
+                                          image = await loadImage(url);
+                                          lastUrl = url;
+                                          ctx.fillStyle = '#000';
+                                          ctx.fillRect(0, 0, width, height);
+                                          if (image?.width && image?.height) {
+                                              const scale = Math.max(width / image.width, height / image.height);
+                                              const drawnWidth = image.width * scale;
+                                              const drawnHeight = image.height * scale;
+                                              ctx.drawImage(image, (width - drawnWidth) / 2, (height - drawnHeight) / 2, drawnWidth, drawnHeight);
+                                          }
                                       }
-                                      await new Promise(r => setTimeout(r, 10));
-                                  }
-
-                                  const stageFrames = Math.max(1, Math.ceil(stage.durationUs / frameDurationUs));
-                                  for (let frameIndex = 0; frameIndex < stageFrames; frameIndex++) {
-                                      const frameStartUs = stage.startUs + (frameIndex * frameDurationUs);
-                                      const isLastFrame = frameIndex === stageFrames - 1;
-                                      const durationUs = isLastFrame
-                                          ? Math.max(1, stage.durationUs - (frameIndex * frameDurationUs))
-                                          : frameDurationUs;
-
-                                      const frame = new VideoFrame(offscreenCanvas, {
-                                          timestamp: frameStartUs,
-                                          duration: durationUs
-                                      });
-                                      if (videoEncoder.state !== 'configured') {
-                                          frame.close();
-                                          throw new Error(translateMessage("视频编码器状态异常 ({0})。可能是分辨率或编码配置不受当前浏览器支持。", { 0: videoEncoder.state }));
+                                      while (encoder.encodeQueueSize > 16) {
+                                          if (encoderError) throw encoderError;
+                                          await new Promise(resolve => setTimeout(resolve, 10));
                                       }
-                                      videoEncoder.encode(frame, { keyFrame: frameIndex === 0 });
+                                      if (encoderError) throw encoderError;
+                                      const timestamp = Math.round(frameIndex * 1_000_000 / fps);
+                                      const duration = Math.max(1, Math.min(250000, Math.round((totalDuration - frameTime) * 1_000_000)));
+                                      const frame = new VideoFrame(canvas, { timestamp, duration });
+                                      encoder.encode(frame, { keyFrame: frameIndex === 0 || imageChanged });
                                       frame.close();
-                                      encodedFrames++;
+                                      exportStatus.value = translateMessage('编码视频 {0}%', { 0: Math.round((globalFrame + 1) / totalFrames * 100) });
                                   }
-
-                                  exportStatus.value = translateMessage("编码视频 {0}%", { 0: Math.round((encodedFrames / totalFrames) * 100) });
-                                  await new Promise(r => setTimeout(r, 0));
+                                  await encoder.flush();
+                                  if (encoderError) throw encoderError;
+                              } finally {
+                                  if (encoder.state !== 'closed') encoder.close();
                               }
-
-                              if (videoEncoder.state === 'configured') {
-                                  await videoEncoder.flush();
-                                  videoEncoder.close();
-                              }
-                          };
-
-                          // 运行编码并捕获任何可能发生的抛错
-                          await Promise.race([
-                              renderVideoPromise(),
-                              encodeErrorPromise
-                          ]);
-
-                          exportStatus.value = translateMessage("封装 MP4...");
-                          muxer.finalize();
-                          const mp4Buffer = muxer.target.buffer;
-                          const blob = new Blob([mp4Buffer], { type: 'video/mp4' });
-
-                          const url = URL.createObjectURL(blob);
-                          const a = document.createElement('a');
-                          a.href = url;
-                          a.download = `Unitale_${translateMessage('导出视频')}_${Date.now()}.mp4`;
-                          document.body.appendChild(a);
-                          a.click();
-                          document.body.removeChild(a);
-                          URL.revokeObjectURL(url);
-
-                      } catch (e) {
-                          console.error('Video generation failed:', e);
-                          alert(translateMessage("导出视频失败: {0}", { 0: e.message }));
+                              muxer.finalize();
+                              downloadArchivePart({
+                                  name: `Unitale_${currentScriptId.value}_${String(part + 1).padStart(3, '0')}-of-${String(count).padStart(3, '0')}.mp4`,
+                                  blob: new Blob([muxer.target.buffer], { type: 'video/mp4' })
+                              });
+                              await new Promise(resolve => setTimeout(resolve, 0));
+                          }
+                      } catch (error) {
+                          console.error('Video generation failed', error);
+                          alert(translateMessage('导出视频失败: {0}', { 0: error.message }));
                       } finally {
                           isGeneratingVideo.value = false;
                           exportStatus.value = '';
                       }
                   };
-
-
 
                   const analyzeScript = async () => {
                       if (isAnalyzingScript.value) {
@@ -3813,27 +3524,34 @@ Write the generated narration, dialogue, character names, and image_prompt value
                               newRoles.forEach(rName => {
                                   const existing = characters.value.find(c => c.name === rName);
                                   let voiceFile = '';
+                                  let voiceAssetId = '';
                                   let id = Date.now() + Math.random().toString();
                                   let volume = 1.0;
 
                                   if (existing) {
                                       voiceFile = existing.voiceFile;
+                                      voiceAssetId = existing.voiceAssetId || '';
                                       id = existing.id;
                                       volume = existing.volume ?? 1.0;
                                   } else {
                                       const matchingTimbre = timbres.value.find(t => t.name === rName);
-                                      if (matchingTimbre) voiceFile = matchingTimbre.refPath;
+                                      if (matchingTimbre) {
+                                          voiceFile = matchingTimbre.refPath;
+                                          voiceAssetId = matchingTimbre.assetId || '';
+                                      }
                                   }
 
                                   newCharacterList.push({
                                       id: id,
                                       name: rName,
                                       voiceFile: voiceFile,
+                                      voiceAssetId,
                                       volume: volume
                                   });
                               });
                               characters.value = newCharacterList;
 
+                              collectOrphansAfterSave = true;
                               scriptLines.value = validParsed.map(item => {
                                   // 通用模糊匹配函数
                                   const findBestMatch = (target, library) => {
@@ -4206,7 +3924,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       saveTtsConfig, editTtsConfig, deleteTtsConfig, resetTtsForm,
 
                       // Character Actions (New)
-                      characters, addCharacter, deleteCharacter,
+                      characters, addCharacter, deleteCharacter, bindCharacterTimbre,
                       analyzeCharacterVoice, generateQwenVoice,
 
                       // Timbre Actions
@@ -4249,6 +3967,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       toggleLineSelection,
                       openBgImagePicker, handleBgImageFileChange, copyBgImagePrompt, openImagePreview, closeImagePreview,
                       exportScriptState, triggerImport, handleImportFile, importFileRef, exportAudio, isExportingAudio,
+                      downloadNextArchivePart, hasMoreArchiveParts,
                       exportSRT, triggerImportTxt, handleImportTxt, importTxtRef,
                       isExportingProject, exportStatus, videoResolution,
                       playScriptSequentially, stopScriptSequentially, isSequencePlaying, currentSequenceIndex,
@@ -4259,6 +3978,9 @@ Write the generated narration, dialogue, character names, and image_prompt value
 
                       generationLanguage,
                       storageAudit, refreshStorageAudit,
+                      lastStorageError,
+                      storageBackend, directoryName, directoryError, directoryModeAvailable,
+                      migrateToDirectory, openDirectoryProject, clearLegacyDatabase,
                       customPromptTemplate, useCustomPrompt, savePrompt, resetPrompt,
                       customVoicePromptTemplate, useCustomVoicePrompt, saveVoicePrompt, resetVoicePrompt,
                       customQwenVoiceTextTemplate, useCustomQwenVoiceText, saveQwenVoiceText, resetQwenVoiceText,

@@ -1,31 +1,5 @@
 import type { ProjectSnapshot } from '../../types/project'
 
-export function referencedLegacyAssetKeys(project: ProjectSnapshot): Set<string> {
-  const keys = new Set<string>()
-  for (const library of [project.libraries.sfx, project.libraries.bgm]) {
-    for (const item of library) if (typeof item.filename === 'string' && item.filename) keys.add(item.filename)
-  }
-  for (const item of project.libraries.timbres) {
-    if (typeof item.refPath === 'string' && item.refPath) keys.add(item.refPath)
-  }
-  for (const character of project.characters) {
-    if (typeof character.voiceFile === 'string' && character.voiceFile) keys.add(character.voiceFile)
-  }
-  for (const script of project.scriptList) {
-    for (const character of script.data.characters || []) {
-      if (typeof character.voiceFile === 'string' && character.voiceFile) keys.add(character.voiceFile)
-    }
-    for (const line of script.data.scriptLines || []) {
-      if (line.type === 'dialogue') keys.add(`line_audio_${line.id}`)
-      if (line.type === 'bgImage') {
-        keys.add(typeof line.bgImageAssetKey === 'string' && line.bgImageAssetKey
-          ? line.bgImageAssetKey : `bgImage_${line.id}`)
-      }
-    }
-  }
-  return keys
-}
-
 export function auditAssetRecords(
   records: Array<{ key: string; byteLength: number }>,
   referenced: ReadonlySet<string>,

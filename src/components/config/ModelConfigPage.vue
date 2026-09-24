@@ -126,12 +126,27 @@ export default defineComponent({ setup: useWorkspace })
                     </div>
                 </div>
                 <div class="config-saved-panel p-5">
+                    <div class="mb-4 flex flex-wrap items-center gap-2 text-sm text-slate-600">
+                        <strong>{{ $t('storage.mode') }}：</strong>
+                        <span>{{ storageBackend === 'directory' ? $t('storage.directory') : $t('storage.indexedDb') }}</span>
+                        <span v-if="directoryName">{{ directoryName }}</span>
+                    </div>
+                    <p v-if="directoryError" class="mb-3 text-sm text-red-600" role="alert">{{ directoryError }}</p>
+                    <p v-if="lastStorageError" class="mb-3 text-sm text-red-600" role="alert">{{ $t('storage.lastError') }}：{{ lastStorageError }}</p>
+                    <div v-if="directoryModeAvailable" class="mb-3 flex flex-wrap gap-2">
+                        <button v-if="storageBackend === 'indexeddb'" type="button" class="toolbar-button" @click="migrateToDirectory">{{ $t('storage.migrate') }}</button>
+                        <button type="button" class="toolbar-button" @click="openDirectoryProject">{{ $t('storage.openDirectory') }}</button>
+                    </div>
+                    <p v-if="directoryModeAvailable" class="mb-4 text-sm text-slate-500">{{ $t('storage.directoryHint') }}</p>
+                    <p v-else class="mb-4 text-sm text-slate-500">{{ $t('storage.directoryUnavailable') }}</p>
                     <button type="button" class="toolbar-button" @click="refreshStorageAudit">{{ $t('storage.refresh') }}</button>
+                    <button type="button" class="toolbar-button ml-2" @click="clearLegacyDatabase">{{ $t('storage.legacyClear') }}</button>
                     <p v-if="storageAudit?.error" class="mt-3 text-sm text-red-600">{{ storageAudit.error }}</p>
                     <div v-else-if="storageAudit" class="mt-3 grid gap-2 text-sm text-slate-600 sm:grid-cols-2">
                         <span>{{ $t('storage.assets') }}：{{ storageAudit.assetCount }}</span>
                         <span>{{ $t('storage.assetBytes') }}：{{ (storageAudit.totalBytes / 1048576).toFixed(1) }} MiB</span>
                         <span>{{ $t('storage.orphans') }}：{{ storageAudit.orphanCount }}（{{ (storageAudit.orphanBytes / 1048576).toFixed(1) }} MiB）</span>
+                        <span :class="storageAudit.missingCount ? 'text-red-600' : ''">{{ $t('storage.missing') }}：{{ storageAudit.missingCount }}</span>
                         <span>{{ $t('storage.decoded') }}：{{ (storageAudit.decodedBytes / 1048576).toFixed(1) }} MiB</span>
                         <span v-if="storageAudit.originUsage !== null">{{ $t('storage.originUsage') }}：{{ (storageAudit.originUsage / 1048576).toFixed(1) }} MiB</span>
                         <span v-if="storageAudit.originQuota !== null">{{ $t('storage.originQuota') }}：{{ (storageAudit.originQuota / 1048576).toFixed(1) }} MiB</span>

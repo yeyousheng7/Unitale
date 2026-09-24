@@ -26,7 +26,9 @@ export default defineComponent({
                     class="toolbar-button">
                     <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#download"></use></svg>{{ isExportingProject ? exportStatus : t('toolbar.exportProject') }}
                 </button>
-                <input type="file" ref="importFileRef" @change="handleImportFile" accept=".json" class="hidden">
+                <button v-if="hasMoreArchiveParts" @click="downloadNextArchivePart" :disabled="isExportingProject"
+                    class="toolbar-button">{{ t('storage.nextPart') }}</button>
+                <input type="file" ref="importFileRef" @change="handleImportFile" accept=".zip,application/zip" multiple class="hidden">
                 <input type="file" ref="importTxtRef" @change="handleImportTxt" accept=".txt" class="hidden">
                 <input type="file" ref="bgImagePickerRef" @change="handleBgImageFileChange" accept="image/*" class="hidden">
                     </div>

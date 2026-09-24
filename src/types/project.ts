@@ -37,10 +37,3 @@ export interface ProjectSnapshot {
   libraries: ProjectLibraries
   timestamp: number
 }
-
-export interface ProjectFileV2 {
-  version: '2.0'
-  timestamp: string
-  libraries: ProjectLibraries
-  project: Pick<ProjectSnapshot, 'characters' | 'scriptList' | 'currentScriptId'>
-}

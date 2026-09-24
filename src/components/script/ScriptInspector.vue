@@ -155,17 +155,17 @@ export default defineComponent({
                             <div>
                                 <label class="block text-[10px] font-bold text-slate-500 uppercase mb-1">{{ $t("音色选择") }}</label>
                                 <div class="flex gap-1">
-                                    <select v-model="char.voiceFile"
+                                    <select v-model="char.voiceFile" @change="bindCharacterTimbre(char)"
                                         class="flex-1 px-2 py-1.5 border rounded-md text-xs bg-white outline-none focus:ring-1 focus:ring-blue-500">
                                         <option value="">{{ $t("-- 请选择音色 --") }}</option>
                                         <option v-for="timbre in timbres" :key="timbre.id" :value="timbre.refPath">
                                             {{ timbre.name }}
                                         </option>
                                     </select>
-                                    <button @click="playPreview(char.voiceFile)" :disabled="!char.voiceFile"
+                                    <button @click="playPreview({ assetId: char.voiceAssetId, filename: char.voiceFile })" :disabled="!char.voiceFile"
                                         class="character-preview"
                                         :title='$t("试听当前音色")' :aria-label="$t('试听{name}的音色', { name: char.name })">
-                                        <svg v-if="previewPlayingFile === char.voiceFile" class="h-4 w-4 text-green-600"
+                                        <svg v-if="previewPlayingFile === (char.voiceAssetId ? `asset:${char.voiceAssetId}` : char.voiceFile)" class="h-4 w-4 text-green-600"
                                             xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
                                             <path fill-rule="evenodd"
                                                 d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM7 8a1 1 0 012 0v4a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z"

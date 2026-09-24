@@ -94,13 +94,13 @@ export default defineComponent({
                                 <div class="font-bold text-slate-800 text-sm">{{ timbre.name }}</div>
                                 <div v-if="timbre.description" class="text-xs text-slate-500 mt-0.5">{{
                                     timbre.description }}</div>
-                                <div class="text-xs text-slate-400 mt-1">{{ timbre.refPath }}</div>
+                                <div class="text-xs text-slate-400 mt-1">{{ timbre.originalFileName || timbre.refPath }}</div>
                             </div>
                         </div>
                         <div class="flex gap-2">
-                            <button @click="playPreview(timbre.refPath)"
+                            <button @click="playPreview(timbre)"
                                 class="text-xs text-slate-400 hover:text-green-600 mr-1" :title='$t("试听")'>
-                                <svg v-if="previewPlayingFile === timbre.refPath" class="h-4 w-4 text-green-600"
+                                <svg v-if="previewPlayingFile === (timbre.assetId ? `asset:${timbre.assetId}` : timbre.refPath)" class="h-4 w-4 text-green-600"
                                     xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
                                     <path fill-rule="evenodd"
                                         d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM7 8a1 1 0 012 0v4a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z"
