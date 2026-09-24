@@ -15,11 +15,13 @@ npm run dev
 
 Check the build with `npm run typecheck` and `npm run build`. Use `npm run preview` to inspect `dist/`.
 
-The Chinese and English pages share one Vue 3 app built with Vite, TypeScript modules, and Tailwind CSS. `index_en.html` is a small English entry page. The build includes both entries and the required `voice/`, `vendor/`, and local icon assets. Sample project files are no longer bundled; import or export your own project JSON in the app.
+The Chinese and English pages share one Vue 3 app built with Vite, TypeScript modules, and Tailwind CSS. `index_en.html` is a small English entry page. The build includes both entries and the required `voice/`, `vendor/`, and local icon assets. Sample project files are no longer bundled; project backups use versioned ZIP archives. Legacy Base64 JSON projects are not imported.
 
 ## Data and deployment
 
-Project data is stored in the browser's IndexedDB and localStorage. Export a full project backup before moving to a different site origin. The build uses `/Unitale/` as its GitHub Pages base path.
+Projects and media use the new `UnitaleWorkspaceDB` by default; model settings remain in localStorage. The settings page offers an optional local project directory. The old `UnitaleDB` is kept until explicitly deleted. Export a complete ZIP backup before changing browser or site origin. Large backups may download in multiple parts; select all parts together when importing. The build uses `/Unitale/` as its GitHub Pages base path.
+
+See the [media storage guide](docs/media-storage.md) for storage and backup details.
 
 The Pages workflow can only be started manually from `dev`. Complete the [acceptance checklist](docs/acceptance.md) before publishing.
 

@@ -13,8 +13,8 @@ Prompt 页面提供独立的“生成内容语言”设置。首次进入时按�
 
 英文分析仍保留现有 JSON 字段、情绪和强度选项、素材名，以及“旁白”角色标识，避免破坏旧工程的角色音色绑定。英文指令只要求生成的叙述、台词、其他角色名和图片提示词使用英文。内置分析 Prompt 的主体目前沿用中文规则和示例，英文输出的实际质量仍需用所选 LLM 验证。
 
-`UnitaleDB` 版本、既有存储键、API 请求和工程 JSON 格式没有迁移。两个入口位于同一网站来源时共享浏览器存档；不同域名或来源之间仍需导出并导入工程文件。
+后续媒体资产架构已迁入 `UnitaleWorkspaceDB`，工程备份改为版本化 ZIP；旧 Base64 JSON 不再支持导入。两个入口位于同一网站来源时共享浏览器存档；不同域名或来源之间仍需导出并导入工程归档。详情见[媒体资产架构说明](media-storage.md)。
 
 ## 验证
 
-运行 `npm run typecheck` 和 `npm run build`，再用 `npm run preview` 分别打开 `/Unitale/` 与 `/Unitale/index_en.html`。人工验收见 [acceptance.md](acceptance.md)，重点检查旧存档恢复、界面语言切换、生成语言与自定义 Prompt、分析结果中的角色音色绑定，以及导入导出。GitHub Pages 发布仍由手动工作流控制。
+运行 `npm test`、`npm run typecheck` 和 `npm run build`，再用 `npm run preview` 分别打开 `/Unitale/` 与 `/Unitale/index_en.html`。人工验收见 [acceptance.md](acceptance.md)。GitHub Pages 发布仍由手动工作流控制。

@@ -21,13 +21,15 @@ npm run build
 npm run preview
 ```
 
-中英文页面共用 Vue 3、Vite、TypeScript 模块和构建版 Tailwind；`index_en.html` 仅提供英文入口。构建产物位于 `dist/`，包括两种语言的入口及运行所需的 `voice/`、`vendor/` 和本地图标。仓库不再附带示例工程文件；可从应用中导出或导入自己的工程 JSON。
+中英文页面共用 Vue 3、Vite、TypeScript 模块和构建版 Tailwind；`index_en.html` 仅提供英文入口。构建产物位于 `dist/`，包括两种语言的入口及运行所需的 `voice/`、`vendor/` 和本地图标。仓库不再附带示例工程文件；可从应用中导出或导入 `formatVersion: 1` 的 ZIP 工程归档。旧 Base64 JSON 工程文件不再支持导入。
 
 中英文共用应用的实现和数据兼容性见[国际化说明](docs/i18n-migration.md)。
 
 ## 数据与发布
 
-项目数据保存在浏览器的 IndexedDB 和 localStorage 中。切换网站来源前，请先导出完整工程文件备份。构建使用 `/Unitale/` 作为 GitHub Pages 路径前缀。
+默认将项目和媒体保存在新的 `UnitaleWorkspaceDB` 中；模型配置仍位于 localStorage。设置页可将项目迁入本地目录，目录模式可在清除网站数据后重新选择该目录打开。旧 `UnitaleDB` 不会自动删除；若不再需要旧开发存档，可在设置页手动清理。切换网站来源或浏览器前，请先导出完整 ZIP 归档。较大的归档会分包下载，导入时需一次选择全部分包。构建使用 `/Unitale/` 作为 GitHub Pages 路径前缀。
+
+存储格式和备份细节见[媒体资产架构说明](docs/media-storage.md)。
 
 Pages 发布工作流仅支持从 `dev` 分支手动触发。发布前请完成[人工验收清单](docs/acceptance.md)。
 
