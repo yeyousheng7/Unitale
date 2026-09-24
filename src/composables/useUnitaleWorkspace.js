@@ -1,6 +1,7 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import { useI18n } from '../i18n'
-import { initDB, saveAssetToDB, loadAssetFromDB, saveAssetsBatch, saveProjectRecord, loadProjectRecord, deleteAssetFromDB } from '../services/storage/indexedDb'
+import { initDB, saveAssetToDB, loadAssetFromDB, saveAssetsBatch, saveProjectRecord, loadProjectRecord, deleteAssetFromDB, listLegacyAssetRecords } from '../services/storage/indexedDb'
+import { referencedLegacyAssetKeys, auditAssetRecords } from '../services/storage/audit'
 import { createProjectSnapshot } from '../services/storage/snapshot'
 import { storageKeys } from '../services/storage/keys'
 import { blobToBase64, base64ToBlob, extractMediaJsonFromFileStream } from '../services/project/media'
@@ -439,6 +440,30 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   const processedDialogueAssetCache = new Map();
                   const processedDialogueBufferPromiseCache = new Map();
                   const localFileMap = ref(new Map());
+                  const storageAudit = ref(/** @type {any} */ (null));
+                  const refreshStorageAudit = async () => {
+                      try {
+                          syncCurrentScriptState();
+                          const snapshot = createProjectSnapshot({
+                              characters: characters.value,
+                              scriptList: scriptList.value,
+                              currentScriptId: currentScriptId.value,
+                              libraries: { sfx: sfxLibrary.value, bgm: bgmLibrary.value, timbres: timbres.value,
+                                  filters: filterLibrary.value, emotions: emotionPresets.value }
+                          });
+                          const records = await listLegacyAssetRecords();
+                          const audit = auditAssetRecords(records, referencedLegacyAssetKeys(snapshot));
+                          const decoded = new Set();
+                          for (const buffer of audioBufferCache.values()) decoded.add(buffer);
+                          for (const asset of processedDialogueAssetCache.values()) if (asset.buffer) decoded.add(asset.buffer);
+                          const decodedBytes = [...decoded].reduce((sum, buffer) => sum + buffer.length * buffer.numberOfChannels * 4, 0);
+                          const estimate = await navigator.storage?.estimate?.();
+                          storageAudit.value = { ...audit, decodedBytes,
+                              originUsage: estimate?.usage ?? null, originQuota: estimate?.quota ?? null, error: '' };
+                      } catch (error) {
+                          storageAudit.value = { error: String(error?.message || error) };
+                      }
+                  };
 
                   // FFmpeg lifecycle and queue live in the audio adapter.
                   // Audio conversion helpers live in the audio service.
@@ -765,6 +790,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   }, { deep: true });
 
                   watch(scriptLines, () => {
+                      if (isRestoring.value) return;
                       triggerAutoSave();
                   }, { deep: true });
 
@@ -1238,14 +1264,19 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   };
 
 
-                  const handleTimbreFileUpload = (event) => {
+                  const handleTimbreFileUpload = async (event) => {
                       const file = event.target.files[0];
                       if (file) {
-                          timbreForm.value.refPath = file.name;
-                          timbreFile.value = file; // Store the file object
-                          localFileMap.value.set(file.name, file);
-                          saveAssetToDB(file.name, file); // Save to DB
-                          triggerAutoSave();
+                          try {
+                              await saveAssetToDB(file.name, file);
+                              timbreForm.value.refPath = file.name;
+                              timbreFile.value = file;
+                              localFileMap.value.set(file.name, file);
+                              triggerAutoSave();
+                          } catch (error) {
+                              console.error('Failed to save voice reference:', error);
+                              alert(translateMessage('保存音色失败: {0}', { 0: error.message }));
+                          }
                       }
                       event.target.value = ''; // Reset file input
                   };
@@ -1406,17 +1437,22 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       isEditingSfx.value = false;
                   };
 
-                  const handleSfxFileUpload = (event) => {
+                  const handleSfxFileUpload = async (event) => {
                       const file = event.target.files[0];
                       if (file) {
-                          sfxForm.value.filename = file.name;
-                          sfxForm.value.trimStart = 0;
-                          sfxForm.value.trimEnd = 1;
-                          sfxForm.value.volume = 0.3;
-                          localFileMap.value.set(file.name, file);
-                          saveAssetToDB(file.name, file); // Save to DB
-                          triggerAutoSave();
-                          loadAudioBuffer(file.name);
+                          try {
+                              await saveAssetToDB(file.name, file);
+                              sfxForm.value.filename = file.name;
+                              sfxForm.value.trimStart = 0;
+                              sfxForm.value.trimEnd = 1;
+                              sfxForm.value.volume = 0.3;
+                              localFileMap.value.set(file.name, file);
+                              triggerAutoSave();
+                              loadAudioBuffer(file.name);
+                          } catch (error) {
+                              console.error('Failed to save sound effect:', error);
+                              alert(translateMessage('保存音效失败: {0}', { 0: error.message }));
+                          }
                       }
                       event.target.value = '';
                   };
@@ -1461,17 +1497,22 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       isEditingBgm.value = false;
                   };
 
-                  const handleBgmFileUpload = (event) => {
+                  const handleBgmFileUpload = async (event) => {
                       const file = event.target.files[0];
                       if (file) {
-                          bgmForm.value.filename = file.name;
-                          bgmForm.value.trimStart = 0;
-                          bgmForm.value.trimEnd = 1;
-                          bgmForm.value.volume = 0.3;
-                          localFileMap.value.set(file.name, file);
-                          saveAssetToDB(file.name, file); // Save to DB
-                          triggerAutoSave();
-                          loadAudioBuffer(file.name);
+                          try {
+                              await saveAssetToDB(file.name, file);
+                              bgmForm.value.filename = file.name;
+                              bgmForm.value.trimStart = 0;
+                              bgmForm.value.trimEnd = 1;
+                              bgmForm.value.volume = 0.3;
+                              localFileMap.value.set(file.name, file);
+                              triggerAutoSave();
+                              loadAudioBuffer(file.name);
+                          } catch (error) {
+                              console.error('Failed to save background music:', error);
+                              alert(translateMessage('保存 BGM 失败: {0}', { 0: error.message }));
+                          }
                       }
                       event.target.value = '';
                   };
@@ -1880,17 +1921,13 @@ Write the generated narration, dialogue, character names, and image_prompt value
 
 
 
-                                      for (const line of linesWithAudio) {
-
-                                          // Don't wait for each one, do them in parallel
-
-                                          clearLineAudio(line);
-
+                                      const results = await Promise.allSettled(linesWithAudio.map(line => clearLineAudio(line)));
+                                      const failures = results.filter(result => result.status === 'rejected');
+                                      if (failures.length) {
+                                          alert(translateMessage('部分音频清除失败，共 {count} 条。', { count: failures.length }));
+                                      } else {
+                                          alert(translateMessage("所有已生成的音频已被清除。"));
                                       }
-
-
-
-                                      alert(translateMessage("所有已生成的音频已被清除。"));
 
                                   };
 
@@ -2066,19 +2103,16 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       const audioUrlToDelete = line.audioUrl;
                       const audioKey = `line_audio_${line.id}`;
 
-                      line.audioUrl = '';
-                      URL.revokeObjectURL(audioUrlToDelete);
-
-                      if (audioBufferCache.has(audioUrlToDelete)) {
-                          audioBufferCache.delete(audioUrlToDelete);
-                      }
-
                       try {
                           await deleteAssetFromDB(audioKey);
                       } catch (e) {
                           console.error(`Failed to delete asset ${audioKey} from DB`, e);
+                          throw e;
                       }
 
+                      line.audioUrl = '';
+                      URL.revokeObjectURL(audioUrlToDelete);
+                      audioBufferCache.delete(audioUrlToDelete);
                       triggerAutoSave();
                   };
 
@@ -2227,9 +2261,19 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   const handleImportFile = async (event) => {
                       const file = event.target.files[0];
                       if (!file) return;
+                      const previousState = {
+                          rawScript: rawScript.value, rawAnalysisResult: rawAnalysisResult.value,
+                          characters: characters.value, scriptLines: scriptLines.value,
+                          scriptList: scriptList.value, currentScriptId: currentScriptId.value,
+                          sfxLibrary: sfxLibrary.value, bgmLibrary: bgmLibrary.value,
+                          timbres: timbres.value, filterLibrary: filterLibrary.value,
+                          emotionPresets: emotionPresets.value,
+                          localFiles: new Map(localFileMap.value)
+                      };
 
                       try {
                           isRestoring.value = true; // 导入期间锁定，防止自动保存触发
+                          if (saveTimeout) clearTimeout(saveTimeout);
                           isExportingProject.value = true; // 复用 loading 状态
                           exportStatus.value = translateMessage("读取巨型文件中...");
 
@@ -2483,7 +2527,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                                           await saveAssetsBatch(assetsToSave);
                                       } catch (e) {
                                           console.error("Asset save failed:", e);
-                                          alert(translateMessage("警告：部分音频资源保存到数据库失败（可能是空间不足），刷新页面后可能会丢失音频文件。但脚本和角色设置将尝试保存。"));
+                                          throw e;
                                       }
                                   }
 
@@ -2573,9 +2617,10 @@ Write the generated narration, dialogue, character names, and image_prompt value
                                       exportStatus.value = translateMessage("保存中...");
                                       if (assetsToSave.length > 0) {
                                           try {
-                                              await saveAssetsBatch(assetsToSave);
-                                          } catch (e) {
-                                              console.error("Asset save failed:", e);
+                                          await saveAssetsBatch(assetsToSave);
+                                      } catch (e) {
+                                          console.error("Asset save failed:", e);
+                                          throw e;
                                           }
                                       }
                                       await saveProjectToDB();
@@ -2586,9 +2631,22 @@ Write the generated narration, dialogue, character names, and image_prompt value
                               }
                           } catch (err) {
                               console.error('导入工程失败:', err);
+                              rawScript.value = previousState.rawScript;
+                              rawAnalysisResult.value = previousState.rawAnalysisResult;
+                              characters.value = previousState.characters;
+                              scriptLines.value = previousState.scriptLines;
+                              scriptList.value = previousState.scriptList;
+                              currentScriptId.value = previousState.currentScriptId;
+                              sfxLibrary.value = previousState.sfxLibrary;
+                              bgmLibrary.value = previousState.bgmLibrary;
+                              timbres.value = previousState.timbres;
+                              filterLibrary.value = previousState.filterLibrary;
+                              emotionPresets.value = previousState.emotionPresets;
+                              localFileMap.value = previousState.localFiles;
                               exportStatus.value = translateMessage("导入失败: {0}", { 0: err.message });
                               alert(translateMessage("导入失败: {0}\n请打开控制台查看详细报错。", { 0: err.message }));
                           } finally {
+                              isRestoring.value = false;
                               isExportingProject.value = false;
                               exportStatus.value = '';
                           }
@@ -4200,6 +4258,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       editingScriptId, startEditingScript, stopEditingScript, scriptNameInputRefs,
 
                       generationLanguage,
+                      storageAudit, refreshStorageAudit,
                       customPromptTemplate, useCustomPrompt, savePrompt, resetPrompt,
                       customVoicePromptTemplate, useCustomVoicePrompt, saveVoicePrompt, resetVoicePrompt,
                       customQwenVoiceTextTemplate, useCustomQwenVoiceText, saveQwenVoiceText, resetQwenVoiceText,

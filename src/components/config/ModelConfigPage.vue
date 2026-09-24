@@ -117,5 +117,26 @@ export default defineComponent({ setup: useWorkspace })
                     </div>
                 </div>
             </section>
+            <section class="config-section" aria-labelledby="storage-diagnostics-title">
+                <div class="config-section-header">
+                    <span class="config-section-number">03</span>
+                    <div>
+                        <h3 id="storage-diagnostics-title">{{ $t('storage.diagnostics') }}</h3>
+                        <p>{{ $t('storage.diagnosticsHint') }}</p>
+                    </div>
+                </div>
+                <div class="config-saved-panel p-5">
+                    <button type="button" class="toolbar-button" @click="refreshStorageAudit">{{ $t('storage.refresh') }}</button>
+                    <p v-if="storageAudit?.error" class="mt-3 text-sm text-red-600">{{ storageAudit.error }}</p>
+                    <div v-else-if="storageAudit" class="mt-3 grid gap-2 text-sm text-slate-600 sm:grid-cols-2">
+                        <span>{{ $t('storage.assets') }}：{{ storageAudit.assetCount }}</span>
+                        <span>{{ $t('storage.assetBytes') }}：{{ (storageAudit.totalBytes / 1048576).toFixed(1) }} MiB</span>
+                        <span>{{ $t('storage.orphans') }}：{{ storageAudit.orphanCount }}（{{ (storageAudit.orphanBytes / 1048576).toFixed(1) }} MiB）</span>
+                        <span>{{ $t('storage.decoded') }}：{{ (storageAudit.decodedBytes / 1048576).toFixed(1) }} MiB</span>
+                        <span v-if="storageAudit.originUsage !== null">{{ $t('storage.originUsage') }}：{{ (storageAudit.originUsage / 1048576).toFixed(1) }} MiB</span>
+                        <span v-if="storageAudit.originQuota !== null">{{ $t('storage.originQuota') }}：{{ (storageAudit.originQuota / 1048576).toFixed(1) }} MiB</span>
+                    </div>
+                </div>
+            </section>
         </div>
 </template>

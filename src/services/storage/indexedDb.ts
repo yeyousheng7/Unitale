@@ -63,11 +63,11 @@ export async function saveAssetToDB(key: string, blob: Blob): Promise<void> {
 
 export async function loadAssetFromDB(key: string): Promise<Blob | null | undefined> {
   if (!dbInstance) await initDB()
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const tx = dbInstance!.transaction('assets', 'readonly')
     const request = tx.objectStore('assets').get(key)
     request.onsuccess = () => resolve(request.result)
-    request.onerror = () => resolve(null)
+    request.onerror = () => reject(request.error)
   })
 }
 
@@ -117,11 +117,29 @@ export async function saveProjectRecord(data: ProjectSnapshot): Promise<void> {
 
 export async function loadProjectRecord(): Promise<ProjectSnapshot | null | undefined> {
   if (!dbInstance) await initDB()
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const tx = dbInstance!.transaction('project', 'readonly')
     const request = tx.objectStore('project').get('currentState')
     request.onsuccess = () => resolve(request.result)
-    request.onerror = () => resolve(null)
+    request.onerror = () => reject(request.error)
+  })
+}
+
+export async function listLegacyAssetRecords(): Promise<Array<{ key: string; byteLength: number }>> {
+  const db = await initDB()
+  return new Promise((resolve, reject) => {
+    const records: Array<{ key: string; byteLength: number }> = []
+    const tx = db.transaction('assets', 'readonly')
+    const request = tx.objectStore('assets').openCursor()
+    request.onsuccess = () => {
+      const cursor = request.result
+      if (!cursor) return
+      records.push({ key: String(cursor.key), byteLength: cursor.value instanceof Blob ? cursor.value.size : 0 })
+      cursor.continue()
+    }
+    request.onerror = () => reject(request.error)
+    tx.onerror = () => reject(tx.error)
+    tx.oncomplete = () => resolve(records)
   })
 }
 
