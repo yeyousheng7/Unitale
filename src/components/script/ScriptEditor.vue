@@ -63,9 +63,9 @@ export default defineComponent({
                                 <label class="text-[10px] font-bold text-slate-500 uppercase whitespace-nowrap">背景图片数量</label>
                                 <input type="number" v-model.number="bgImageCount" min="0" max="100"
                                     class="w-20 px-2 py-1 border rounded-lg text-xs focus:ring-2 focus:ring-emerald-500 outline-none bg-white"
-                                    title="LLM 将严格插入的 bgImage 块数量" />
+                                    title="下次 AI 分析时插入的背景图片块数量；0 表示不插入" />
                                 <span class="text-[10px] text-slate-400 whitespace-nowrap">张</span>
-                                <span class="text-[10px] text-slate-400 ml-2">（若需关闭，可从Prompt管理中删除背景图片块相关提示词）</span>
+                                <span class="text-[10px] text-slate-400 ml-2">（0 张时不自动插入；已有图片块需手动删除）</span>
                             </div>
                         </div>
 

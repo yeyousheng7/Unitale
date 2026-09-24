@@ -856,9 +856,9 @@ Model Settings
                                 <label class="text-[10px] font-bold text-slate-500 uppercase whitespace-nowrap">Background Image Count</label>
                                 <input type="number" v-model.number="bgImageCount" min="0" max="100"
                                     class="w-20 px-2 py-1 border rounded-lg text-xs focus:ring-2 focus:ring-emerald-500 outline-none bg-white"
-                                    title="Number of bgImage blocks the LLM must insert" />
+                                    title="Background image blocks for the next AI analysis; 0 disables automatic insertion" />
                                 <span class="text-[10px] text-slate-400 whitespace-nowrap">images</span>
-                                <span class="text-[10px] text-slate-400 ml-2">(To disable this, remove the background-image block instructions in Prompt Manager.)</span>
+                                <span class="text-[10px] text-slate-400 ml-2">(0 disables automatic insertion; remove existing blocks manually.)</span>
                             </div>
                         </div>
 
@@ -5368,6 +5368,7 @@ const generateVideo = async () => {
                     if (!currentConfig.value) return alert('Please select an LLM model configuration in Model Settings first.');
                     if (!rawScript.value.trim()) return alert('Please enter the source text.');
 
+                    const requestedBgImageCount = Math.max(0, Number(bgImageCount.value) || 0);
                     isAnalyzingScript.value = true;
                     analysisAbortController.value = new AbortController();
 
@@ -5418,10 +5419,13 @@ const generateVideo = async () => {
                         .replace(/\${bgmExampleLine}/g, bgmExampleLine)
                         .replace(/\${sfxExample}/g, sfxExample)
                         .replace(/\${rawScript}/g, rawScript.value)
-                        .replace(/\${bgImageCount}/g, bgImageCount.value);
+                        .replace(/\${bgImageCount}/g, requestedBgImageCount);
 
                     // 兼容：当用户启用“自定义 Prompt”时，补充最低约束与数量约束（只添加，不删减原有 prompt）。
-                    if (useCustomPrompt.value) {
+                    if (requestedBgImageCount === 0) {
+                        finalPrompt = finalPrompt.replace(/\n\s*## 7\. Background Image Block \(bgImage\)[\s\S]*?(?=\n\s*## 小说原文:)/, '');
+                        finalPrompt += '\n\nThe requested background image count is 0. Do not output any objects with type bgImage.';
+                    } else if (useCustomPrompt.value) {
                         if (!finalPrompt.includes('bgImage')) {
                             finalPrompt += `
 
@@ -5435,7 +5439,7 @@ const generateVideo = async () => {
                         finalPrompt += `
 
 ## Background Image Block数量约束（严格遵守）
-- 请在整个 JSON 数组中严格插入且仅插入 ${bgImageCount.value} 个 \`type":"bgImage"\` 对象。
+- 请在整个 JSON 数组中严格插入且仅插入 ${requestedBgImageCount} 个 \`type":"bgImage"\` 对象。
 - 第一个 \`bgImage\` 对象必须出现在“第一个 dialogue 对象之前”，用于视频开场背景；允许开头存在 \`bgm\` 控制块。
 - 除开场第一images外，其余 \`bgImage\` 必须按剧情节奏插入在台词（至少间隔一个 \`dialogue\`），避免连续出现多个 \`bgImage\`。
 `;
@@ -5474,8 +5478,9 @@ const generateVideo = async () => {
 
                         const parsed = JSON.parse(jsonStr);
                         if (Array.isArray(parsed)) {
-                            // 移除拦截逻辑，完全信任 Prompt (或允许用户手动修正幻觉)
-                            const validParsed = parsed;
+                            const validParsed = requestedBgImageCount === 0
+                                ? parsed.filter(item => item?.type !== 'bgImage')
+                                : parsed;
 
                             const newRoles = new Set();
                             validParsed.forEach(item => {
@@ -5943,6 +5948,5 @@ const generateVideo = async () => {
 </body>
 
 </html>
-
 
 

@@ -3604,6 +3604,7 @@ export function useUnitaleWorkspace() {
                       if (!currentConfig.value) return alert('请先在“模型配置”选择一个 LLM 模型配置');
                       if (!rawScript.value.trim()) return alert('请输入原文内容');
 
+                      const requestedBgImageCount = Math.max(0, Number(bgImageCount.value) || 0);
                       isAnalyzingScript.value = true;
                       analysisAbortController.value = new AbortController();
 
@@ -3654,10 +3655,14 @@ export function useUnitaleWorkspace() {
                           .replace(/\${bgmExampleLine}/g, bgmExampleLine)
                           .replace(/\${sfxExample}/g, sfxExample)
                           .replace(/\${rawScript}/g, rawScript.value)
-                          .replace(/\${bgImageCount}/g, bgImageCount.value);
+                          .replace(/\${bgImageCount}/g, requestedBgImageCount);
 
                       // 兼容：当用户启用“自定义 Prompt”时，补充最低约束与数量约束（只添加，不删减原有 prompt）。
-                      if (useCustomPrompt.value) {
+                      if (requestedBgImageCount === 0) {
+                          // 默认模板包含开场必须插入 bgImage 的指令；0 张时移除整段，避免自相矛盾。
+                          finalPrompt = finalPrompt.replace(/\n\s*## 7\. 背景图片块 \(bgImage\)[\s\S]*?(?=\n\s*## 小说原文:)/, '');
+                          finalPrompt += '\n\n本次背景图片数量为 0。不要输出任何 type 为 bgImage 的对象。';
+                      } else if (useCustomPrompt.value) {
                           if (!finalPrompt.includes('bgImage')) {
                               finalPrompt += `
 
@@ -3671,7 +3676,7 @@ export function useUnitaleWorkspace() {
                           finalPrompt += `
 
   ## 背景图片块数量约束（严格遵守）
-  - 请在整个 JSON 数组中严格插入且仅插入 ${bgImageCount.value} 个 \`type":"bgImage"\` 对象。
+  - 请在整个 JSON 数组中严格插入且仅插入 ${requestedBgImageCount} 个 \`type":"bgImage"\` 对象。
   - 第一个 \`bgImage\` 对象必须出现在“第一个 dialogue 对象之前”，用于视频开场背景；允许开头存在 \`bgm\` 控制块。
   - 除开场第一张外，其余 \`bgImage\` 必须按剧情节奏插入在台词之间（至少间隔一个 \`dialogue\`），避免连续出现多个 \`bgImage\`。
   `;
@@ -3710,8 +3715,10 @@ export function useUnitaleWorkspace() {
 
                           const parsed = JSON.parse(jsonStr);
                           if (Array.isArray(parsed)) {
-                              // 移除拦截逻辑，完全信任 Prompt (或允许用户手动修正幻觉)
-                              const validParsed = parsed;
+                              // 数量为 0 时不接受模型幻觉生成的背景图片块。
+                              const validParsed = requestedBgImageCount === 0
+                                  ? parsed.filter(item => item?.type !== 'bgImage')
+                                  : parsed;
 
                               const newRoles = new Set();
                               validParsed.forEach(item => {
