@@ -1,6 +1,8 @@
+import { translateForCurrentLocale } from '../../i18n'
+
 export async function getAudioBlobFromUrl(audioUrl: string): Promise<Blob> {
   const response = await fetch(audioUrl)
-  if (!response.ok) throw new Error('读取原始音频失败')
+  if (!response.ok) throw new Error(translateForCurrentLocale('读取原始音频失败'))
   return await response.blob()
 }
 

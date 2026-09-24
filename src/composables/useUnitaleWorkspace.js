@@ -1,4 +1,5 @@
 import { ref, onMounted, computed, watch } from 'vue'
+import { useI18n } from '../i18n'
 import { initDB, saveAssetToDB, loadAssetFromDB, saveAssetsBatch, saveProjectRecord, loadProjectRecord, deleteAssetFromDB } from '../services/storage/indexedDb'
 import { createProjectSnapshot } from '../services/storage/snapshot'
 import { storageKeys } from '../services/storage/keys'
@@ -9,6 +10,7 @@ import { getAudioBlobFromUrl, getFileExtensionFromBlob, buildDialogueAudioFilter
 import { requestService } from '../services/api/client'
 
 export function useUnitaleWorkspace() {
+                  const { t: translateMessage } = useI18n();
                   // --- System Emotions Definition ---
                   const SYSTEM_EMOTIONS = [
                       { id: 'sys_1', name: '高兴', vector: [1, 0, 0, 0, 0, 0, 0, 0] },
@@ -156,7 +158,7 @@ export function useUnitaleWorkspace() {
 
                   const switchScript = (id) => {
                       if (isAnalyzingScript.value || isGeneratingAll.value || isSequencePlaying.value) {
-                          return alert('请先停止当前的生成或播放任务，再切换脚本。');
+                          return alert(translateMessage("请先停止当前的生成或播放任务，再切换脚本。"));
                       }
                       if (id === currentScriptId.value) return;
                       syncCurrentScriptState();
@@ -175,7 +177,7 @@ export function useUnitaleWorkspace() {
 
                   const addScript = () => {
                       if (isAnalyzingScript.value || isGeneratingAll.value || isSequencePlaying.value) {
-                          return alert('请先停止当前的生成或播放任务，再添加脚本。');
+                          return alert(translateMessage("请先停止当前的生成或播放任务，再添加脚本。"));
                       }
                       syncCurrentScriptState();
                       const newId = Date.now().toString();
@@ -203,10 +205,10 @@ export function useUnitaleWorkspace() {
 
                   const deleteScriptTab = (id) => {
                       if (isAnalyzingScript.value || isGeneratingAll.value || isSequencePlaying.value) {
-                          return alert('请先停止当前的生成或播放任务，再删除脚本。');
+                          return alert(translateMessage("请先停止当前的生成或播放任务，再删除脚本。"));
                       }
-                      if (scriptList.value.length <= 1) return alert('至少保留一个脚本');
-                      if (!confirm('确定删除此脚本吗？')) return;
+                      if (scriptList.value.length <= 1) return alert(translateMessage("至少保留一个脚本"));
+                      if (!confirm(translateMessage("确定删除此脚本吗？"))) return;
 
                       const idx = scriptList.value.findIndex(s => s.id === id);
                       if (idx === -1) return;
@@ -955,7 +957,7 @@ export function useUnitaleWorkspace() {
 
                   const saveConfig = () => {
                       if (!form.value.name || !form.value.baseUrl || !form.value.key) {
-                          return alert('请填写完整信息');
+                          return alert(translateMessage("请填写完整信息"));
                       }
 
                       form.value.baseUrl = form.value.baseUrl.trim();
@@ -984,7 +986,7 @@ export function useUnitaleWorkspace() {
                   };
 
                   const deleteConfig = (id) => {
-                      if (!confirm('确定删除此配置吗？')) return;
+                      if (!confirm(translateMessage("确定删除此配置吗？"))) return;
                       llmConfigs.value = llmConfigs.value.filter(c => c.id !== id);
                       saveConfigsToLocal();
                       if (currentConfigId.value === id) currentConfigId.value = '';
@@ -1002,7 +1004,7 @@ export function useUnitaleWorkspace() {
 
                   const saveTtsConfig = () => {
                       if (!ttsForm.value.name || !ttsForm.value.baseUrl) {
-                          return alert('请填写完整信息');
+                          return alert(translateMessage("请填写完整信息"));
                       }
 
                       ttsForm.value.baseUrl = ttsForm.value.baseUrl.trim();
@@ -1024,7 +1026,7 @@ export function useUnitaleWorkspace() {
                   };
 
                   const deleteTtsConfig = (id) => {
-                      if (!confirm('确定删除此 TTS 配置吗？')) return;
+                      if (!confirm(translateMessage("确定删除此 TTS 配置吗？"))) return;
                       ttsConfigs.value = ttsConfigs.value.filter(c => c.id !== id);
                       saveTtsConfigsToLocal();
                   };
@@ -1045,7 +1047,7 @@ export function useUnitaleWorkspace() {
                   };
 
                   const deleteCharacter = (id) => {
-                      if (!confirm('确定删除此角色吗？')) return;
+                      if (!confirm(translateMessage("确定删除此角色吗？"))) return;
                       characters.value = characters.value.filter(c => c.id !== id);
                   };
 
@@ -1055,8 +1057,8 @@ export function useUnitaleWorkspace() {
                           return;
                       }
 
-                      if (!currentConfig.value) return alert('请先在“模型配置”中配置 LLM');
-                      if (!rawScript.value.trim()) return alert('请先在右侧输入小说原文');
+                      if (!currentConfig.value) return alert(translateMessage("请先在“模型配置”中配置 LLM"));
+                      if (!rawScript.value.trim()) return alert(translateMessage("请先在右侧输入小说原文"));
 
                       char.isAnalyzing = true;
                       const controller = new AbortController();
@@ -1084,13 +1086,13 @@ export function useUnitaleWorkspace() {
                               signal: controller.signal
                           });
 
-                          if (!res.ok) throw new Error(`LLM 请求失败: ${res.status}`);
+                          if (!res.ok) throw new Error(translateMessage("LLM 请求失败: {0}", { 0: res.status }));
                           const data = await res.json();
                           const content = data.choices[0]?.message?.content || '';
                           char.voiceDescription = content.trim();
                       } catch (e) {
                           if (e.name !== 'AbortError') {
-                              alert('分析失败: ' + e.message);
+                              alert(translateMessage("分析失败: {0}", { 0: e.message }));
                           }
                       } finally {
                           char.isAnalyzing = false;
@@ -1104,8 +1106,8 @@ export function useUnitaleWorkspace() {
                           return;
                       }
 
-                      if (!currentTtsConfig.value) return alert('请先选择 TTS 服务');
-                      if (!char.voiceDescription) return alert('请先填写音色描述');
+                      if (!currentTtsConfig.value) return alert(translateMessage("请先选择 TTS 服务"));
+                      if (!char.voiceDescription) return alert(translateMessage("请先填写音色描述"));
 
                       char.isGeneratingVoice = true;
                       const startTime = Date.now();
@@ -1144,7 +1146,7 @@ export function useUnitaleWorkspace() {
 
                           if (!genRes.ok) {
                               const err = await genRes.text();
-                              throw new Error(`生成失败: ${err}`);
+                              throw new Error(translateMessage("生成失败: {0}", { 0: err }));
                           }
 
                           const blob = await genRes.blob();
@@ -1165,7 +1167,7 @@ export function useUnitaleWorkspace() {
                               body: formData,
                               signal: controller.signal
                           });
-                          if (!upRes.ok) throw new Error('上传参考音频失败');
+                          if (!upRes.ok) throw new Error(translateMessage("上传参考音频失败"));
 
                           // 4. 添加或更新音色库
                           const timbreName = `${char.name}_AI`;
@@ -1198,14 +1200,14 @@ export function useUnitaleWorkspace() {
 
                           if (e.name === 'AbortError') {
                               if (controller.signal.reason === "timeout") {
-                                  msg = '请求超时 (超过 30 分钟)。请检查后端是否卡死。';
+                                  msg = translateMessage('请求超时 (超过 30 分钟)。请检查后端是否卡死。');
                               } else {
-                                  msg = '操作已手动取消。';
+                                  msg = translateMessage('操作已手动取消。');
                               }
                           } else if (msg === 'Failed to fetch') {
-                              msg = `连接异常中断 (耗时 ${Math.round(duration)}秒)。\n这不是前端代码设定的超时(30分钟)，而是您的浏览器或网络环境(如代理/Nginx)强制断开了连接。\n\n由于无法修改后端保存文件，此音频已丢失。\n建议：尝试精简音色描述以减少生成时间。`;
+                              msg = translateMessage('连接异常中断 (耗时 {seconds}秒)。\n这不是前端代码设定的超时(30分钟)，而是您的浏览器或网络环境(如代理/Nginx)强制断开了连接。\n\n由于无法修改后端保存文件，此音频已丢失。\n建议：尝试精简音色描述以减少生成时间。', { seconds: Math.round(duration) });
                           }
-                          alert('生成音色失败: ' + msg);
+                          alert(translateMessage("生成音色失败: {0}", { 0: msg }));
                       } finally {
                           clearTimeout(timeoutId);
                           char.isGeneratingVoice = false;
@@ -1288,12 +1290,12 @@ export function useUnitaleWorkspace() {
 
                   const saveTimbre = async () => {
                       if (!timbreForm.value.name || !timbreForm.value.refPath) {
-                          return alert('请填写音色名称并选择一个参考音频文件');
+                          return alert(translateMessage("请填写音色名称并选择一个参考音频文件"));
                       }
 
                       // A file MUST be selected when creating a NEW timbre.
                       if (!isEditingTimbre.value && !timbreFile.value) {
-                          return alert('创建新音色时，必须选择一个参考音频文件。');
+                          return alert(translateMessage("创建新音色时，必须选择一个参考音频文件。"));
                       }
 
                       const filename = timbreForm.value.refPath;
@@ -1321,7 +1323,7 @@ export function useUnitaleWorkspace() {
 
                       } catch (e) {
                           console.error("保存音色时出错:", e);
-                          alert(`保存音色失败: ${e.message}`);
+                          alert(translateMessage("保存音色失败: {0}", { 0: e.message }));
                       }
                   };
 
@@ -1332,7 +1334,7 @@ export function useUnitaleWorkspace() {
                   };
 
                   const deleteTimbre = async (id) => {
-                      if (!confirm('确定删除此音色吗？')) return;
+                      if (!confirm(translateMessage("确定删除此音色吗？"))) return;
                       timbres.value = timbres.value.filter(c => c.id !== id);
                       // saveTimbresToLocal();
                       if (selectedTimbreId.value === id) selectedTimbreId.value = '';
@@ -1349,7 +1351,7 @@ export function useUnitaleWorkspace() {
 
                   const saveSfx = async () => {
                       if (!sfxForm.value.name || !sfxForm.value.filename) {
-                          return alert('请填写音效名称和文件路径');
+                          return alert(translateMessage("请填写音效名称和文件路径"));
                       }
 
                       try {
@@ -1363,7 +1365,7 @@ export function useUnitaleWorkspace() {
                           // saveSfxToLocal();
                           resetSfxForm();
                       } catch (e) {
-                          alert(`保存音效失败: ${e.message}`);
+                          alert(translateMessage("保存音效失败: {0}", { 0: e.message }));
                       }
                   };
 
@@ -1373,7 +1375,7 @@ export function useUnitaleWorkspace() {
                   };
 
                   const deleteSfx = (id) => {
-                      if (!confirm('确定删除？')) return;
+                      if (!confirm(translateMessage("确定删除？"))) return;
                       sfxLibrary.value = sfxLibrary.value.filter(s => s.id !== id);
                   };
 
@@ -1404,7 +1406,7 @@ export function useUnitaleWorkspace() {
 
                   const saveBgm = async () => {
                       if (!bgmForm.value.name || !bgmForm.value.filename) {
-                          return alert('请填写 BGM 名称和文件路径');
+                          return alert(translateMessage("请填写 BGM 名称和文件路径"));
                       }
 
                       try {
@@ -1418,7 +1420,7 @@ export function useUnitaleWorkspace() {
                           // saveBgmToLocal();
                           resetBgmForm();
                       } catch (e) {
-                          alert(`保存 BGM 失败: ${e.message}`);
+                          alert(translateMessage("保存 BGM 失败: {0}", { 0: e.message }));
                       }
                   };
 
@@ -1428,7 +1430,7 @@ export function useUnitaleWorkspace() {
                   };
 
                   const deleteBgm = (id) => {
-                      if (!confirm('确定删除？')) return;
+                      if (!confirm(translateMessage("确定删除？"))) return;
                       bgmLibrary.value = bgmLibrary.value.filter(s => s.id !== id);
                   };
 
@@ -1458,7 +1460,7 @@ export function useUnitaleWorkspace() {
                   };
 
                   const saveFilter = () => {
-                      if (!filterForm.value.name) return alert('请填写滤波器名称');
+                      if (!filterForm.value.name) return alert(translateMessage("请填写滤波器名称"));
 
                       const newFilter = { ...filterForm.value };
                       // Ensure numbers
@@ -1482,7 +1484,7 @@ export function useUnitaleWorkspace() {
                   };
 
                   const deleteFilter = (id) => {
-                      if (!confirm('确定删除此滤波器？')) return;
+                      if (!confirm(translateMessage("确定删除此滤波器？"))) return;
                       filterLibrary.value = filterLibrary.value.filter(f => f.id !== id);
                       // saveFiltersToLocal();
                   };
@@ -1496,8 +1498,8 @@ export function useUnitaleWorkspace() {
                   // 移除 saveEmotionPresetsToLocal
 
                   const saveEmotion = () => {
-                      if (!emotionForm.value.name) return alert('请填写情绪名称');
-                      if (isSystemEmotion(emotionForm.value.name)) return alert('无法修改或覆盖系统预设情绪');
+                      if (!emotionForm.value.name) return alert(translateMessage("请填写情绪名称"));
+                      if (isSystemEmotion(emotionForm.value.name)) return alert(translateMessage("无法修改或覆盖系统预设情绪"));
                       if (isEditingEmotion.value) {
                           const index = emotionPresets.value.findIndex(e => e.id === emotionForm.value.id);
                           if (index !== -1) emotionPresets.value[index] = { ...emotionForm.value };
@@ -1514,7 +1516,7 @@ export function useUnitaleWorkspace() {
                   };
 
                   const deleteEmotion = (id) => {
-                      if (!confirm('确定删除？')) return;
+                      if (!confirm(translateMessage("确定删除？"))) return;
                       emotionPresets.value = emotionPresets.value.filter(e => e.id !== id);
                       // saveEmotionPresetsToLocal();
                   };
@@ -1525,7 +1527,7 @@ export function useUnitaleWorkspace() {
                   };
 
                   const resetEmotionsToDefault = () => {
-                      if (!confirm('确定要重置所有情绪预设为默认值吗？这将清除自定义的情绪。')) return;
+                      if (!confirm(translateMessage("确定要重置所有情绪预设为默认值吗？这将清除自定义的情绪。"))) return;
                       emotionPresets.value = [...SYSTEM_EMOTIONS];
                       // saveEmotionPresetsToLocal();
                   };
@@ -1596,7 +1598,7 @@ export function useUnitaleWorkspace() {
                       }
 
                       if (!currentTtsConfig.value) {
-                          alert('请先在 TTS 配置中心选择一个 TTS 服务');
+                          alert(translateMessage("请先在 TTS 配置中心选择一个 TTS 服务"));
                           return;
                       }
 
@@ -1612,7 +1614,7 @@ export function useUnitaleWorkspace() {
                       try {
                           const char = characters.value.find(c => c.name === line.role);
                           if (!char || !char.voiceFile) {
-                              throw new Error(`角色 "${line.role}" 未绑定音色文件路径。\n\n请在左侧的角色列表中为该角色选择一个音色文件，或手动输入路径。`);
+                              throw new Error(translateMessage("角色 \"{0}\" 未绑定音色文件路径。\n\n请在左侧的角色列表中为该角色选择一个音色文件，或手动输入路径。", { 0: line.role }));
                           }
 
                           let finalVector = [0, 0, 0, 0, 0, 0, 0, 0];
@@ -1666,7 +1668,7 @@ export function useUnitaleWorkspace() {
 
                           if (!synthRes.ok) {
                               const errText = await synthRes.text();
-                              throw new Error(`语音合成失败: ${errText}`);
+                              throw new Error(translateMessage("语音合成失败: {0}", { 0: errText }));
                           }
 
                           const blob = await synthRes.blob();
@@ -1726,7 +1728,7 @@ export function useUnitaleWorkspace() {
 
                                               const lineIndex = scriptLines.value.findIndex(l => l.id === line.id);
 
-                                              alert(`一键生成已终止。\n\n原因：第 ${lineIndex + 1} 行台词的角色（${line.role}）没有绑定音源。`);
+                                              alert(translateMessage("一键生成已终止。\n\n原因：第 {0} 行台词的角色（{1}）没有绑定音源。", { 0: lineIndex + 1, 1: line.role }));
 
                                               return;
 
@@ -1740,7 +1742,7 @@ export function useUnitaleWorkspace() {
 
                                       if (dialogueCount === 0) {
 
-                                          alert('没有需要生成的台词音频。');
+                                          alert(translateMessage("没有需要生成的台词音频。"));
 
                                           return;
 
@@ -1750,9 +1752,9 @@ export function useUnitaleWorkspace() {
 
                                       const confirmMsg = startIndex > 0
 
-                                          ? `即将从第 ${startIndex + 1} 行（选中行）开始，为后续 ${dialogueCount} 条【未生成】的台词生成音频。确定继续吗？`
+                                          ? translateMessage('即将从第 {start} 行（选中行）开始，为后续 {count} 条【未生成】的台词生成音频。确定继续吗？', { start: startIndex + 1, count: dialogueCount })
 
-                                          : `即将为全部 ${dialogueCount} 条【未生成】的台词生成音频。确定继续吗？`;
+                                          : translateMessage('即将为全部 {count} 条【未生成】的台词生成音频。确定继续吗？', { count: dialogueCount });
 
 
 
@@ -1806,17 +1808,17 @@ export function useUnitaleWorkspace() {
 
                                           if (batchSignal.aborted) {
 
-                                              alert('批量生成已停止。');
+                                              alert(translateMessage("批量生成已停止。"));
 
                                           } else if (failedCount > 0) {
 
-                                              alert(`一键生成完成，但有 ${failedCount} 条台词生成失败。请检查控制台或单独重新生成失败的台词。`);
+                                              alert(translateMessage("一键生成完成，但有 {0} 条台词生成失败。请检查控制台或单独重新生成失败的台词。", { 0: failedCount }));
 
                                           } else {
 
                                               await saveProjectToDB();
 
-                                              alert('批量生成完成！');
+                                              alert(translateMessage("批量生成完成！"));
 
                                           }
 
@@ -1824,7 +1826,7 @@ export function useUnitaleWorkspace() {
 
                                           console.error("生成全部音频时发生意外错误:", e);
 
-                                          alert('生成过程中出现未知错误，详情请查看控制台。');
+                                          alert(translateMessage("生成过程中出现未知错误，详情请查看控制台。"));
 
                                       } finally {
 
@@ -1844,11 +1846,11 @@ export function useUnitaleWorkspace() {
 
                                       if (linesWithAudio.length === 0) {
 
-                                          return alert('没有已生成的音频可以清除。');
+                                          return alert(translateMessage("没有已生成的音频可以清除。"));
 
                                       }
 
-                                      if (!confirm(`确定要清除所有 ${linesWithAudio.length} 条已生成的音频吗？此操作不可撤销。`)) {
+                                      if (!confirm(translateMessage("确定要清除所有 {0} 条已生成的音频吗？此操作不可撤销。", { 0: linesWithAudio.length }))) {
 
                                           return;
 
@@ -1866,7 +1868,7 @@ export function useUnitaleWorkspace() {
 
 
 
-                                      alert('所有已生成的音频已被清除。');
+                                      alert(translateMessage("所有已生成的音频已被清除。"));
 
                                   };
 
@@ -2061,10 +2063,10 @@ export function useUnitaleWorkspace() {
                   // --- 存档管理逻辑 ---
                   // Project media conversion and streaming import live in the project service.
                   const exportScriptState = async () => {
-                      if (!confirm('即将导出包含所有素材（音效、BGM、音色）的完整工程文件。如果素材较多，文件可能较大，请耐心等待。')) return;
+                      if (!confirm(translateMessage("即将导出包含所有素材（音效、BGM、音色）的完整工程文件。如果素材较多，文件可能较大，请耐心等待。"))) return;
 
                       isExportingProject.value = true;
-                      exportStatus.value = '准备中...';
+                      exportStatus.value = translateMessage("准备中...");
 
                       syncCurrentScriptState(); // 确保最新状态
 
@@ -2075,7 +2077,7 @@ export function useUnitaleWorkspace() {
                               for (let i = 0; i < lib.length; i++) {
                                   const item = lib[i];
                                   // 进度提示 & 让出主线程防止卡死
-                                  if (i % 20 === 0) { exportStatus.value = `打包资源 ${Math.round((i / lib.length) * 100)}%`; await new Promise(r => requestAnimationFrame(r)); }
+                                  if (i % 20 === 0) { exportStatus.value = translateMessage("打包资源 {0}%", { 0: Math.round((i / lib.length) * 100) }); await new Promise(r => requestAnimationFrame(r)); }
 
                                   const itemCopy = { ...item };
                                   const filename = item[fileKey];
@@ -2118,7 +2120,7 @@ export function useUnitaleWorkspace() {
                                   const line = lines[i];
                                   line.isGenerating = false;
 
-                              if (i % 20 === 0) { exportStatus.value = `打包音频...`; await new Promise(r => requestAnimationFrame(r)); }
+                              if (i % 20 === 0) { exportStatus.value = translateMessage("打包音频..."); await new Promise(r => requestAnimationFrame(r)); }
 
                               // 尝试获取音频 Blob (优先 fetch URL，失败则查 DB)
                               let blob = null;
@@ -2164,7 +2166,7 @@ export function useUnitaleWorkspace() {
                               }
                           }
 
-                          exportStatus.value = '生成文件...';
+                          exportStatus.value = translateMessage("生成文件...");
                           await new Promise(r => requestAnimationFrame(r));
 
                           const blob = createProjectExportBlob({
@@ -2182,14 +2184,14 @@ export function useUnitaleWorkspace() {
                           a.href = url;
                           const now = new Date();
                           const timestamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
-                          a.download = `Unitale工程文件_${timestamp}.json`;
+                          a.download = `${translateMessage('Unitale工程文件')}_${timestamp}.json`;
                           document.body.appendChild(a);
                           a.click();
                           document.body.removeChild(a);
                           setTimeout(() => URL.revokeObjectURL(url), 30000);
                       } catch (e) {
                           console.error(e);
-                          alert('导出失败: ' + e.message);
+                          alert(translateMessage("导出失败: {0}", { 0: e.message }));
                       } finally {
                           isExportingProject.value = false;
                           exportStatus.value = '';
@@ -2207,21 +2209,21 @@ export function useUnitaleWorkspace() {
                       try {
                           isRestoring.value = true; // 导入期间锁定，防止自动保存触发
                           isExportingProject.value = true; // 复用 loading 状态
-                          exportStatus.value = '读取巨型文件中...';
+                          exportStatus.value = translateMessage("读取巨型文件中...");
 
-                          exportStatus.value = '读取文件中...';
+                          exportStatus.value = translateMessage("读取文件中...");
                           const extractedBlobs = [];
                           let data;
 
                           if (file.size > 50 * 1024 * 1024) {
-                              exportStatus.value = '提取媒体数据...';
+                              exportStatus.value = translateMessage("提取媒体数据...");
                               const { tinyJsonStr, extractedBlobs: streamExtractedBlobs } = await extractMediaJsonFromFileStream(file);
                               extractedBlobs.push(...streamExtractedBlobs);
                               if (!tinyJsonStr || !tinyJsonStr.trim()) {
-                                  throw new Error('导入文件为空或流式读取失败。');
+                                  throw new Error(translateMessage("导入文件为空或流式读取失败。"));
                               }
 
-                              exportStatus.value = '解析结构数据...';
+                              exportStatus.value = translateMessage("解析结构数据...");
                               try {
                                   data = JSON.parse(tinyJsonStr);
                               } catch (err) {
@@ -2233,21 +2235,21 @@ export function useUnitaleWorkspace() {
                                   } else {
                                       console.error("流式预处理后尾部片段:", tinyJsonStr.slice(-200));
                                   }
-                                  exportStatus.value = `解析失败: ${err.message}`;
+                                  exportStatus.value = translateMessage("解析失败: {0}", { 0: err.message });
                                   throw err;
                               }
                           } else {
                               const text = await file.text();
                               if (!text || !text.trim()) {
-                                  throw new Error('导入文件为空。请重新导出后再试；旧导出的文件可能在下载时没有完整写入。');
+                                  throw new Error(translateMessage("导入文件为空。请重新导出后再试；旧导出的文件可能在下载时没有完整写入。"));
                               }
 
-                              exportStatus.value = '解析结构数据...';
+                              exportStatus.value = translateMessage("解析结构数据...");
                               try {
                                   data = JSON.parse(text);
                               } catch (directParseError) {
                                   console.warn('直接解析失败，尝试启用 Base64 提取兼容路径...', directParseError);
-                                  exportStatus.value = '提取媒体数据...';
+                                  exportStatus.value = translateMessage("提取媒体数据...");
 
                                   let tinyJsonStr;
                                   try {
@@ -2257,7 +2259,7 @@ export function useUnitaleWorkspace() {
                                       });
                                   } catch (e) {
                                       console.error('正则替换提取Base64时出错:', e);
-                                      exportStatus.value = `提取失败: ${e.message}`;
+                                      exportStatus.value = translateMessage("提取失败: {0}", { 0: e.message });
                                       throw e;
                                   }
 
@@ -2273,7 +2275,7 @@ export function useUnitaleWorkspace() {
                                           console.error("原始文件尾部片段:", text.slice(-200));
                                           console.error("预处理后尾部片段:", tinyJsonStr.slice(-200));
                                       }
-                                      exportStatus.value = `解析失败: ${err.message}`;
+                                      exportStatus.value = translateMessage("解析失败: {0}", { 0: err.message });
                                       throw err;
                                   }
                               }
@@ -2319,7 +2321,7 @@ export function useUnitaleWorkspace() {
 
                               if (data.version === '2.0' || data.project) {
                                   // v2.0 完整工程格式
-                                  if (!confirm('检测到完整工程文件。导入将覆盖当前的【资源库和脚本】（模型配置不会被覆盖）。确定继续吗？')) return;
+                                  if (!confirm(translateMessage("检测到完整工程文件。导入将覆盖当前的【资源库和脚本】（模型配置不会被覆盖）。确定继续吗？"))) return;
 
                                   // --- 清空当前数据 ---
                                   rawScript.value = '';
@@ -2388,7 +2390,7 @@ export function useUnitaleWorkspace() {
                                   }
 
                                   // 恢复台词音频
-                                  exportStatus.value = '恢复台词音频...';
+                                  exportStatus.value = translateMessage("恢复台词音频...");
                                   for (const script of scriptList.value) {
                                       const lines = script.data.scriptLines || [];
                                       for (const line of lines) {
@@ -2453,24 +2455,24 @@ export function useUnitaleWorkspace() {
                                   }
 
                                   // 执行批量保存 (一次性写入所有文件)
-                                  exportStatus.value = '写入数据库...';
+                                  exportStatus.value = translateMessage("写入数据库...");
                                   if (assetsToSave.length > 0) {
                                       try {
                                           await saveAssetsBatch(assetsToSave);
                                       } catch (e) {
                                           console.error("Asset save failed:", e);
-                                          alert("警告：部分音频资源保存到数据库失败（可能是空间不足），刷新页面后可能会丢失音频文件。但脚本和角色设置将尝试保存。");
+                                          alert(translateMessage("警告：部分音频资源保存到数据库失败（可能是空间不足），刷新页面后可能会丢失音频文件。但脚本和角色设置将尝试保存。"));
                                       }
                                   }
 
                                   // 强制保存一次项目状态到 DB，确保 JSON 数据也同步
                                   await saveProjectToDB();
 
-                                  alert('完整工程导入成功！所有资源和设置已恢复。');
+                                  alert(translateMessage("完整工程导入成功！所有资源和设置已恢复。"));
 
                               } else if (data.scriptLines && Array.isArray(data.scriptLines)) {
                                   // v1.x 旧版存档格式兼容
-                                  if (confirm('检测到旧版存档。确定要读取吗？当前未保存的进度将被覆盖。')) {
+                                  if (confirm(translateMessage("检测到旧版存档。确定要读取吗？当前未保存的进度将被覆盖。"))) {
                                       // 修复：先清空角色列表，防止残留
                                       characters.value = [];
 
@@ -2500,7 +2502,7 @@ export function useUnitaleWorkspace() {
                                       }
 
                                       // 恢复音频数据 (Base64 -> Blob URL)
-                                      exportStatus.value = '恢复旧版数据...';
+                                      exportStatus.value = translateMessage("恢复旧版数据...");
 
                                       // 初始化脚本列表
                                       scriptList.value = [{
@@ -2546,7 +2548,7 @@ export function useUnitaleWorkspace() {
                                       activeScriptData.scriptLines = restoredLines;
                                       scriptLines.value = restoredLines; // Sync to view
 
-                                      exportStatus.value = '保存中...';
+                                      exportStatus.value = translateMessage("保存中...");
                                       if (assetsToSave.length > 0) {
                                           try {
                                               await saveAssetsBatch(assetsToSave);
@@ -2555,15 +2557,15 @@ export function useUnitaleWorkspace() {
                                           }
                                       }
                                       await saveProjectToDB();
-                                      alert('存档读取成功！');
+                                      alert(translateMessage("存档读取成功！"));
                                   }
                               } else {
-                                  alert('无效的存档文件格式');
+                                  alert(translateMessage("无效的存档文件格式"));
                               }
                           } catch (err) {
                               console.error('导入工程失败:', err);
-                              exportStatus.value = `导入失败: ${err.message}`;
-                              alert(`导入失败: ${err.message}\n请打开控制台查看详细报错。`);
+                              exportStatus.value = translateMessage("导入失败: {0}", { 0: err.message });
+                              alert(translateMessage("导入失败: {0}\n请打开控制台查看详细报错。", { 0: err.message }));
                           } finally {
                               isExportingProject.value = false;
                               exportStatus.value = '';
@@ -2589,9 +2591,9 @@ export function useUnitaleWorkspace() {
                   // --- 导出音频逻辑 (WAV) ---
                   const exportAudio = async () => {
                       const dialogueLines = scriptLines.value.filter(l => l.type === 'dialogue');
-                      if (dialogueLines.length === 0) return alert('脚本为空');
+                      if (dialogueLines.length === 0) return alert(translateMessage("脚本为空"));
                       if (dialogueLines.some(l => !l.audioUrl)) {
-                          if (!confirm('部分台词尚未生成音频，导出时将被跳过。确定继续吗？')) return;
+                          if (!confirm(translateMessage("部分台词尚未生成音频，导出时将被跳过。确定继续吗？"))) return;
                       }
 
                       isExportingAudio.value = true;
@@ -2771,7 +2773,7 @@ export function useUnitaleWorkspace() {
 
                       } catch (e) {
                           console.error(e);
-                          alert('导出失败: ' + e.message);
+                          alert(translateMessage("导出失败: {0}", { 0: e.message }));
                       } finally {
                           isExportingAudio.value = false;
                       }
@@ -2779,10 +2781,10 @@ export function useUnitaleWorkspace() {
 
                   const exportSRT = async () => {
                       const dialogueLines = scriptLines.value.filter(l => l.type === 'dialogue');
-                      if (dialogueLines.length === 0) return alert('脚本为空');
+                      if (dialogueLines.length === 0) return alert(translateMessage("脚本为空"));
 
                       if (dialogueLines.some(l => !l.audioUrl)) {
-                          if (!confirm('部分台词尚未生成音频，导出字幕时时间轴可能不准确（将跳过未生成音频的行）。确定继续吗？')) return;
+                          if (!confirm(translateMessage("部分台词尚未生成音频，导出字幕时时间轴可能不准确（将跳过未生成音频的行）。确定继续吗？"))) return;
                       }
 
                       isExportingAudio.value = true; // 复用 loading 状态
@@ -2906,14 +2908,14 @@ export function useUnitaleWorkspace() {
                           const url = URL.createObjectURL(blob);
                           const a = document.createElement('a');
                           a.href = url;
-                          a.download = `Unitale字幕文件_${Date.now()}.srt`;
+                          a.download = `${translateMessage('Unitale字幕文件')}_${Date.now()}.srt`;
                           document.body.appendChild(a);
                           a.click();
                           document.body.removeChild(a);
                           URL.revokeObjectURL(url);
                       } catch (e) {
                           console.error(e);
-                          alert('导出SRT失败: ' + e.message);
+                          alert(translateMessage("导出SRT失败: {0}", { 0: e.message }));
                       } finally {
                           isExportingAudio.value = false;
                       }
@@ -2965,7 +2967,7 @@ export function useUnitaleWorkspace() {
 
                   // --- 脚本制作逻辑 ---
                   const splitScript = () => {
-                      if (!rawScript.value.trim()) return alert('请输入原文内容');
+                      if (!rawScript.value.trim()) return alert(translateMessage("请输入原文内容"));
 
                       let text = rawScript.value.replace(/\r\n/g, '\n');
                       const splitRegex = /\n+|(?<=[。！？!?])(?=["']?)\s*/;
@@ -3088,7 +3090,7 @@ export function useUnitaleWorkspace() {
                           await saveAssetToDB(assetKey, file);
                       } catch (e) {
                           console.error('Failed to save bgImage asset:', e);
-                          alert('保存背景图片失败，请重试。');
+                          alert(translateMessage("保存背景图片失败，请重试。"));
                       }
 
                       triggerAutoSave();
@@ -3099,7 +3101,7 @@ export function useUnitaleWorkspace() {
                       if (!text) return;
                       try {
                           await navigator.clipboard.writeText(text);
-                          alert('已复制背景图片提示词');
+                          alert(translateMessage("已复制背景图片提示词"));
                       } catch (e) {
                           // Fallback for environments without clipboard permission
                           const ta = document.createElement('textarea');
@@ -3110,7 +3112,7 @@ export function useUnitaleWorkspace() {
                           ta.select();
                           document.execCommand('copy');
                           document.body.removeChild(ta);
-                          alert('已复制背景图片提示词');
+                          alert(translateMessage("已复制背景图片提示词"));
                       }
                   };
 
@@ -3205,7 +3207,7 @@ export function useUnitaleWorkspace() {
                           bgmAudioNode.start(0, bgmAudioNode.loopStart);
                       } catch (e) {
                           console.error(`Failed to load or play BGM ${bgmLibItem.filename}:`, e);
-                          alert(`播放背景音乐失败: ${bgmLibItem.filename}`);
+                          alert(translateMessage("播放背景音乐失败: {0}", { 0: bgmLibItem.filename }));
                       }
                   };
 
@@ -3326,22 +3328,22 @@ export function useUnitaleWorkspace() {
                   // --- 视频生成（MP4 离线合成） ---
   const generateVideo = async () => {
                       const dialogueLines = scriptLines.value.filter(l => l.type === 'dialogue');
-                      if (dialogueLines.length === 0) return alert('脚本为空');
+                      if (dialogueLines.length === 0) return alert(translateMessage("脚本为空"));
 
                       if (dialogueLines.some(l => !l.audioUrl)) {
-                          if (!confirm('部分台词尚未生成音频，导出视频时将跳过未生成的台词。确定继续吗？')) return;
+                          if (!confirm(translateMessage("部分台词尚未生成音频，导出视频时将跳过未生成的台词。确定继续吗？"))) return;
                       }
 
                       if (typeof VideoEncoder === 'undefined') {
-                          return alert('当前浏览器不支持 WebCodecs API，无法快速导出视频。请使用最新版 Chrome 或 Edge。');
+                          return alert(translateMessage("当前浏览器不支持 WebCodecs API，无法快速导出视频。请使用最新版 Chrome 或 Edge。"));
                       }
                       const Mp4Muxer = getMp4Muxer();
                     if (!Mp4Muxer) {
-                          return alert('缺少 Mp4Muxer 库，无法导出 MP4。');
+                          return alert(translateMessage("缺少 Mp4Muxer 库，无法导出 MP4。"));
                       }
 
                       isGeneratingVideo.value = true;
-                      exportStatus.value = '准备素材...';
+                      exportStatus.value = translateMessage("准备素材...");
 
                       try {
                           const dialogueTimings = new Map();
@@ -3410,7 +3412,7 @@ export function useUnitaleWorkspace() {
                               });
                           }
 
-                          exportStatus.value = '生成视频轨道...';
+                          exportStatus.value = translateMessage("生成视频轨道...");
 
                           const fps = 4;
                           const totalDuration = currentTime + EXPORT_TAIL_PADDING_SEC;
@@ -3433,7 +3435,7 @@ export function useUnitaleWorkspace() {
                                   output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
                                   error: e => {
                                       console.error('VideoEncoder error:', e);
-                                      reject(new Error('视频编码错误: ' + e.message));
+                                      reject(new Error(translateMessage("视频编码错误: {0}", { 0: e.message })));
                                   }
                               });
 
@@ -3546,14 +3548,14 @@ export function useUnitaleWorkspace() {
                                       });
                                       if (videoEncoder.state !== 'configured') {
                                           frame.close();
-                                          throw new Error('视频编码器状态异常 (' + videoEncoder.state + ')。可能是分辨率或编码配置不受当前浏览器支持。');
+                                          throw new Error(translateMessage("视频编码器状态异常 ({0})。可能是分辨率或编码配置不受当前浏览器支持。", { 0: videoEncoder.state }));
                                       }
                                       videoEncoder.encode(frame, { keyFrame: frameIndex === 0 });
                                       frame.close();
                                       encodedFrames++;
                                   }
 
-                                  exportStatus.value = `编码视频 ${Math.round((encodedFrames / totalFrames) * 100)}%`;
+                                  exportStatus.value = translateMessage("编码视频 {0}%", { 0: Math.round((encodedFrames / totalFrames) * 100) });
                                   await new Promise(r => setTimeout(r, 0));
                               }
 
@@ -3569,7 +3571,7 @@ export function useUnitaleWorkspace() {
                               encodeErrorPromise
                           ]);
 
-                          exportStatus.value = '封装 MP4...';
+                          exportStatus.value = translateMessage("封装 MP4...");
                           muxer.finalize();
                           const mp4Buffer = muxer.target.buffer;
                           const blob = new Blob([mp4Buffer], { type: 'video/mp4' });
@@ -3577,7 +3579,7 @@ export function useUnitaleWorkspace() {
                           const url = URL.createObjectURL(blob);
                           const a = document.createElement('a');
                           a.href = url;
-                          a.download = `Unitale_导出视频_${Date.now()}.mp4`;
+                          a.download = `Unitale_${translateMessage('导出视频')}_${Date.now()}.mp4`;
                           document.body.appendChild(a);
                           a.click();
                           document.body.removeChild(a);
@@ -3585,7 +3587,7 @@ export function useUnitaleWorkspace() {
 
                       } catch (e) {
                           console.error('Video generation failed:', e);
-                          alert('导出视频失败: ' + e.message);
+                          alert(translateMessage("导出视频失败: {0}", { 0: e.message }));
                       } finally {
                           isGeneratingVideo.value = false;
                           exportStatus.value = '';
@@ -3601,8 +3603,8 @@ export function useUnitaleWorkspace() {
                           return;
                       }
 
-                      if (!currentConfig.value) return alert('请先在“模型配置”选择一个 LLM 模型配置');
-                      if (!rawScript.value.trim()) return alert('请输入原文内容');
+                      if (!currentConfig.value) return alert(translateMessage("请先在“模型配置”选择一个 LLM 模型配置"));
+                      if (!rawScript.value.trim()) return alert(translateMessage("请输入原文内容"));
 
                       const requestedBgImageCount = Math.max(0, Number(bgImageCount.value) || 0);
                       isAnalyzingScript.value = true;
@@ -3826,14 +3828,14 @@ export function useUnitaleWorkspace() {
                                   };
                               });
                           } else {
-                              alert('AI 返回格式异常，请重试');
+                              alert(translateMessage("AI 返回格式异常，请重试"));
                           }
                       } catch (e) {
                           if (e.name === 'AbortError') {
-                              alert('分析已停止');
+                              alert(translateMessage("分析已停止"));
                           } else {
                               console.error(e);
-                              alert('分析失败: ' + e.message);
+                              alert(translateMessage("分析失败: {0}", { 0: e.message }));
                           }
                       } finally {
                           isAnalyzingScript.value = false;
@@ -3858,7 +3860,7 @@ export function useUnitaleWorkspace() {
                   };
 
                   const send = async () => {
-                      if (!currentConfig.value) return alert('请先选择一个有效的模型配置');
+                      if (!currentConfig.value) return alert(translateMessage("请先选择一个有效的模型配置"));
                       const cfg = currentConfig.value;
 
                       loading.value = true;
@@ -3942,7 +3944,7 @@ export function useUnitaleWorkspace() {
                           } else {
                               error.value = e.message;
                               if (e.message.includes('Failed to fetch')) {
-                                  error.value += "\n\n检测到跨域(CORS)限制！Gemini API 通常禁止从浏览器前端直接调用。\n建议：开启浏览器 CORS 插件，或使用后端中转。";
+                                  error.value += translateMessage("\n\n检测到跨域(CORS)限制！Gemini API 通常禁止从浏览器前端直接调用。\n建议：开启浏览器 CORS 插件，或使用后端中转。");
                               }
                           }
                       } finally {
@@ -3972,10 +3974,10 @@ export function useUnitaleWorkspace() {
                   };
 
                   const synthesizeAudio = async () => {
-                      if (!currentTtsConfig.value) return alert('请选择 TTS 配置');
+                      if (!currentTtsConfig.value) return alert(translateMessage("请选择 TTS 配置"));
                       const textToSpeak = result.value || prompt.value;
-                      if (!textToSpeak) return alert('没有可合成的文本 (请先对话或输入提示词)');
-                      if (!ttsRefPath.value) return alert('请指定参考音频路径 ID');
+                      if (!textToSpeak) return alert(translateMessage("没有可合成的文本 (请先对话或输入提示词)"));
+                      if (!ttsRefPath.value) return alert(translateMessage("请指定参考音频路径 ID"));
 
                       ttsLoading.value = true;
                       ttsError.value = '';
@@ -4009,7 +4011,7 @@ export function useUnitaleWorkspace() {
 
                               if (!uploadRes.ok) throw new Error(`Upload failed: ${uploadRes.status}`);
                           } else if (!checkData.exists) {
-                              throw new Error(`服务端未找到音频 "${ttsRefPath.value}"，且未选择本地文件进行上传。`);
+                              throw new Error(translateMessage("服务端未找到音频 \"{0}\"，且未选择本地文件进行上传。", { 0: ttsRefPath.value }));
                           }
 
                           // 3. 合成语音
@@ -4055,24 +4057,24 @@ export function useUnitaleWorkspace() {
                       localStorage.setItem(storageKeys.useCustomPrompt, JSON.stringify(useCustomPrompt.value));
                       localStorage.setItem(storageKeys.voicePromptTemplate, customVoicePromptTemplate.value);
                       localStorage.setItem(storageKeys.useCustomVoicePrompt, JSON.stringify(useCustomVoicePrompt.value));
-                      alert('Prompt 设置已保存');
+                      alert(translateMessage("Prompt 设置已保存"));
                   };
 
                   const saveVoicePrompt = () => {
                       localStorage.setItem(storageKeys.voicePromptTemplate, customVoicePromptTemplate.value);
                       localStorage.setItem(storageKeys.useCustomVoicePrompt, JSON.stringify(useCustomVoicePrompt.value));
-                      alert('音色分析 Prompt 设置已保存');
+                      alert(translateMessage("音色分析 Prompt 设置已保存"));
                   };
 
                   const resetPrompt = () => {
-                      if (confirm('确定要恢复默认 Prompt 吗？')) {
+                      if (confirm(translateMessage("确定要恢复默认 Prompt 吗？"))) {
                           customPromptTemplate.value = defaultPromptTemplate;
                           customVoicePromptTemplate.value = defaultVoicePromptTemplate;
                       }
                   };
 
                   const resetVoicePrompt = () => {
-                      if (confirm('确定要恢复默认的音色分析 Prompt 吗？')) {
+                      if (confirm(translateMessage("确定要恢复默认的音色分析 Prompt 吗？"))) {
                           customVoicePromptTemplate.value = defaultVoicePromptTemplate;
                           localStorage.setItem(storageKeys.voicePromptTemplate, defaultVoicePromptTemplate);
                       }
@@ -4081,11 +4083,11 @@ export function useUnitaleWorkspace() {
                   const saveQwenVoiceText = () => {
                       localStorage.setItem(storageKeys.qwenVoiceTextTemplate, customQwenVoiceTextTemplate.value);
                       localStorage.setItem(storageKeys.useCustomQwenVoiceText, JSON.stringify(useCustomQwenVoiceText.value));
-                      alert('Qwen 生成文本设置已保存');
+                      alert(translateMessage("Qwen 生成文本设置已保存"));
                   };
 
                   const resetQwenVoiceText = () => {
-                      if (confirm('确定要恢复默认文本吗？')) {
+                      if (confirm(translateMessage("确定要恢复默认文本吗？"))) {
                           customQwenVoiceTextTemplate.value = defaultQwenVoiceTextTemplate;
                       }
                   };

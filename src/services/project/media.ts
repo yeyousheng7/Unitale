@@ -1,3 +1,5 @@
+import { translateForCurrentLocale } from '../../i18n'
+
 export function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -24,7 +26,7 @@ export async function extractMediaJsonFromFileStream(file: File): Promise<{
   tinyJsonStr: string
   extractedBlobs: string[]
 }> {
-  if (!file?.stream) throw new Error('当前浏览器不支持大文件流式读取。')
+  if (!file?.stream) throw new Error(translateForCurrentLocale('当前浏览器不支持大文件流式读取。'))
 
   const markers: MediaMarker[] = [
     { key: '_fileData', marker: '"_fileData":"' },
@@ -91,7 +93,7 @@ export async function extractMediaJsonFromFileStream(file: File): Promise<{
   }
 
   pending += decoder.decode()
-  if (capturing) throw new Error(`流式读取时在 ${capturing.key} 字段遇到意外 EOF`)
+  if (capturing) throw new Error(translateForCurrentLocale('流式读取时在 {key} 字段遇到意外 EOF', { key: capturing.key }))
   if (pending) tinyJsonParts.push(pending)
   return { tinyJsonStr: tinyJsonParts.join(''), extractedBlobs }
 }

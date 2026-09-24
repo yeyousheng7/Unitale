@@ -1,3 +1,5 @@
+import { translateForCurrentLocale } from '../../i18n'
+
 export interface FFmpegInstance {
   load(options: { coreURL: string; wasmURL: string }): Promise<void>
   writeFile(name: string, data: Uint8Array): Promise<void>
@@ -27,7 +29,7 @@ export async function ensureFFmpegLoaded(): Promise<FFmpegInstance> {
       const FFmpegGlobal = globals.FFmpegWASM
       const FFmpegUtilGlobal = globals.FFmpegUtil
       if (!FFmpegGlobal?.FFmpeg || !FFmpegUtilGlobal?.toBlobURL) {
-        throw new Error('ffmpeg.wasm 依赖加载失败')
+        throw new Error(translateForCurrentLocale('ffmpeg.wasm 依赖加载失败'))
       }
       const { FFmpeg } = FFmpegGlobal
       const { toBlobURL } = FFmpegUtilGlobal
