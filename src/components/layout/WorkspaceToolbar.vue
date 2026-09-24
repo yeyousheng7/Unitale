@@ -28,7 +28,9 @@ export default defineComponent({ setup: useWorkspace })
                 </button>
                 <button @click="exportAudio" :disabled="isExportingAudio"
                     class="toolbar-button toolbar-button-primary">
-                    <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#download"></use></svg>{{ isExportingAudio ? (exportStatus || '⏳ 处理中...') : '导出音频' }}
+                    <svg v-if="isExportingAudio" class="animate-spin" aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#loader-circle"></use></svg>
+                    <svg v-else aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#download"></use></svg>
+                    {{ isExportingAudio ? (exportStatus || '处理中...') : '导出音频' }}
                 </button>
                 <details class="more-export">
                     <summary class="toolbar-button">更多导出<svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#chevron-down"></use></svg></summary>
@@ -42,7 +44,8 @@ export default defineComponent({ setup: useWorkspace })
                                 <option value="960x1280">竖屏 3:4</option>
                             </select>
                             <button @click="generateVideo" :disabled="isExportingAudio || isSequencePlaying || isGeneratingVideo" class="toolbar-button">
-                                {{ isGeneratingVideo ? (exportStatus || '⏳ 生成视频...') : '生成视频' }}
+                                <svg v-if="isGeneratingVideo" class="animate-spin" aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#loader-circle"></use></svg>
+                                {{ isGeneratingVideo ? (exportStatus || '生成视频...') : '生成视频' }}
                             </button>
                         </div>
                     </div>

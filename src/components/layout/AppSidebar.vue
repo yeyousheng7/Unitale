@@ -50,7 +50,7 @@ export default defineComponent({ setup: useWorkspace })
                             <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#file-text"></use></svg>
                             <span v-if="editingScriptId !== script.id" class="script-nav-name">{{ script.name }}</span>
                             <input v-else v-model="script.name" @click.stop @blur="stopEditingScript" @keyup.enter="stopEditingScript" :ref="el => { if(el) scriptNameInputRefs[script.id] = el }" class="script-nav-input" />
-                            <button @click.stop="deleteScriptTab(script.id)" class="script-nav-delete" :aria-label="'删除' + script.name" title="删除脚本">×</button>
+                            <button @click.stop="deleteScriptTab(script.id)" class="script-nav-delete" :aria-label="'删除' + script.name" title="删除脚本"><svg class="ui-icon" aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#x"></use></svg></button>
                         </div>
                     </div>
                     <button @click="addScript" class="add-script-button"><svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#plus"></use></svg>新增脚本</button>

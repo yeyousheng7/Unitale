@@ -591,9 +591,8 @@ export default defineComponent({
         </div>
 
         <p class="workspace-footer">
-            <a href="https://space.bilibili.com/11354448" target="_blank">
-                本网站由sdsds222制作，点击此处访问个人主页
-            </a>
+            基于 <a href="https://github.com/sdsds222/Unitale" target="_blank" rel="noopener noreferrer">sdsds222/Unitale</a> 二次开发
+            · <a href="https://github.com/yeyousheng7/Unitale" target="_blank" rel="noopener noreferrer">当前项目仓库</a>
         </p>
 
                 </main>

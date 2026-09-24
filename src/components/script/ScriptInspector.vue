@@ -54,7 +54,7 @@ export default defineComponent({ setup: useWorkspace })
                                     class="font-bold text-slate-800 w-2/3 bg-transparent border-b border-transparent focus:border-blue-500 outline-none px-1"
                                     placeholder="角色名">
                                 <button @click="deleteCharacter(char.id)"
-                                    class="character-delete" :aria-label="'删除角色' + char.name" title="删除角色">×</button>
+                                    class="character-delete" :aria-label="'删除角色' + char.name" title="删除角色"><svg class="ui-icon" aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#x"></use></svg></button>
                             </div>
 
                             <div>
@@ -100,11 +100,11 @@ export default defineComponent({ setup: useWorkspace })
                                 <div class="flex gap-1">
                                     <button @click="analyzeCharacterVoice(char)"
                                         :class="['flex-1 px-2 py-1.5 border rounded text-[10px] font-bold transition-colors flex justify-center items-center gap-1', char.isAnalyzing ? 'bg-red-50 text-red-600 border-red-100 hover:bg-red-100' : 'bg-indigo-50 text-indigo-600 border-indigo-100 hover:bg-indigo-100']">
-                                        <span v-if="char.isAnalyzing" class="animate-spin">⏳</span>{{ char.isAnalyzing ? '停止分析' : 'AI分析音色' }}
+                                        <svg v-if="char.isAnalyzing" class="ui-icon animate-spin" aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#loader-circle"></use></svg>{{ char.isAnalyzing ? '停止分析' : 'AI分析音色' }}
                                     </button>
                                     <button @click="generateQwenVoice(char)"
                                         :class="['flex-1 px-2 py-1.5 border rounded text-[10px] font-bold transition-colors flex justify-center items-center gap-1', char.isGeneratingVoice ? 'bg-red-50 text-red-600 border-red-100 hover:bg-red-100' : 'bg-pink-50 text-pink-600 border-pink-100 hover:bg-pink-100']">
-                                        <span v-if="char.isGeneratingVoice" class="animate-spin">⏳</span>{{ char.isGeneratingVoice ? '停止生成' : 'Qwen生成音色' }}
+                                        <svg v-if="char.isGeneratingVoice" class="ui-icon animate-spin" aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#loader-circle"></use></svg>{{ char.isGeneratingVoice ? '停止生成' : 'Qwen生成音色' }}
                                     </button>
                                 </div>
                             </div>
