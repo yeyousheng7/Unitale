@@ -7,13 +7,46 @@ export default defineComponent({ setup: useWorkspace })
 
 <template>
 <aside class="script-inspector">
-                <div class="inspector-panel">
+                <!-- 配音/生成/播放 -->
+                <div class="inspector-panel voice-panel">
+                    <h3>配音与播放</h3>
+                    <label class="field-label" for="script-tts-config">TTS 服务</label>
+                    <select id="script-tts-config" v-model="currentTtsConfigId"
+                        class="voice-service-select"
+                        title="选择用于生成的 TTS 服务">
+                        <option value="" disabled>-- 选择 TTS 模型 --</option>
+                        <option v-for="conf in ttsConfigs" :key="conf.id" :value="conf.id">
+                            {{ conf.name }}
+                        </option>
+                    </select>
+
+                    <div class="voice-actions">
+                        <button @click="generateAllLines" :disabled="isSequencePlaying"
+                            :class="['voice-generate-button', isGeneratingAll ? 'is-stopping' : '']">
+                            <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#audio-lines"></use></svg>
+                            {{ isGeneratingAll ? '停止生成' : (selectedLineIndex !== -1 ? '从选中行开始生成' : '一键生成配音(跳过已生成)') }}
+                        </button>
+                        <div class="voice-secondary-actions">
+                            <button v-if="!isSequencePlaying" @click="playScriptSequentially" class="secondary-action">
+                                <svg class="secondary-action-icon" aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#play"></use></svg>
+                                {{ selectedLineIndex !== -1 ? '从选中位置播放' : '顺序播放' }}
+                            </button>
+                            <button v-else @click="stopScriptSequentially" class="secondary-action is-danger">
+                                <svg class="secondary-action-icon" aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#square"></use></svg>停止播放
+                            </button>
+                            <button @click="clearAllGeneratedAudio" :disabled="isSequencePlaying || isGeneratingAll" class="secondary-action is-danger">清空配音</button>
+                        </div>
+                    </div>
+                    <p class="voice-status" v-if="isGeneratingAll">正在生成当前脚本的配音…</p>
+                </div>
+                <!-- 角色音色设置 -->
+                <div class="inspector-panel character-panel">
                     <h3 class="inspector-heading">
                         角色与音色
                         <button @click="addCharacter"
                             class="inspector-add-button"><svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#plus"></use></svg>新增</button>
                     </h3>
-                    <div class="space-y-3 pr-1">
+                    <div class="character-list" role="region" aria-label="角色音色与音量设置" tabindex="0">
                         <div v-for="char in characters" :key="char.id"
                             class="character-card">
                             <div class="flex justify-between items-center">
@@ -79,38 +112,6 @@ export default defineComponent({ setup: useWorkspace })
                         <div v-if="characters.length === 0" class="text-center text-xs text-slate-400 py-4">暂无角色，请点击新增
                         </div>
                     </div>
-                </div>
-                <!-- 配音/生成/播放 -->
-                <div class="inspector-panel voice-panel">
-                    <h3>配音与播放</h3>
-                    <label class="field-label" for="script-tts-config">TTS 服务</label>
-                    <select id="script-tts-config" v-model="currentTtsConfigId"
-                        class="voice-service-select"
-                        title="选择用于生成的 TTS 服务">
-                        <option value="" disabled>-- 选择 TTS 模型 --</option>
-                        <option v-for="conf in ttsConfigs" :key="conf.id" :value="conf.id">
-                            {{ conf.name }}
-                        </option>
-                    </select>
-
-                    <div class="voice-actions">
-                        <button @click="generateAllLines" :disabled="isSequencePlaying"
-                            :class="['voice-generate-button', isGeneratingAll ? 'is-stopping' : '']">
-                            <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#audio-lines"></use></svg>
-                            {{ isGeneratingAll ? '停止生成' : (selectedLineIndex !== -1 ? '从选中行开始生成' : '一键生成配音(跳过已生成)') }}
-                        </button>
-                        <div class="voice-secondary-actions">
-                            <button v-if="!isSequencePlaying" @click="playScriptSequentially" class="secondary-action">
-                                <svg class="secondary-action-icon" aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#play"></use></svg>
-                                {{ selectedLineIndex !== -1 ? '从选中位置播放' : '顺序播放' }}
-                            </button>
-                            <button v-else @click="stopScriptSequentially" class="secondary-action is-danger">
-                                <svg class="secondary-action-icon" aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#square"></use></svg>停止播放
-                            </button>
-                            <button @click="clearAllGeneratedAudio" :disabled="isSequencePlaying || isGeneratingAll" class="secondary-action is-danger">清空配音</button>
-                        </div>
-                    </div>
-                    <p class="voice-status" v-if="isGeneratingAll">正在生成当前脚本的配音…</p>
                 </div>
             </aside>
 </template>

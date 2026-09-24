@@ -1,12 +1,34 @@
 <script lang="ts">
-import { defineComponent, onBeforeUpdate } from 'vue'
+import { defineComponent, nextTick, onBeforeUpdate, ref, watch } from 'vue'
 import { useWorkspace } from '../../context/workspace'
+import ScriptInsertActions from './ScriptInsertActions.vue'
 
 export default defineComponent({
+  components: { ScriptInsertActions },
   setup() {
     const workspace = useWorkspace()
+    const sourceExpanded = ref(true)
+    const scriptLinesPanelRef = ref<HTMLElement | null>(null)
+
+    watch(() => workspace.scriptLines.value, (lines) => {
+      sourceExpanded.value = lines.length === 0
+    }, { immediate: true, flush: 'post' })
+
+    const handleAnalyzeScript = async () => {
+      const stopping = workspace.isAnalyzingScript.value
+      if (!stopping && workspace.scriptLines.value.length > 0 &&
+          !window.confirm('重新分析会覆盖当前台词编辑结果，确定继续吗？')) return
+
+      const previousLines = workspace.scriptLines.value
+      await workspace.analyzeScript()
+      if (!stopping && workspace.scriptLines.value !== previousLines && workspace.scriptLines.value.length > 0) {
+        await nextTick()
+        scriptLinesPanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }
+    }
+
     onBeforeUpdate(() => { workspace.lineRefs.value = [] })
-    return workspace
+    return { ...workspace, sourceExpanded, scriptLinesPanelRef, handleAnalyzeScript }
   },
 })
 </script>
@@ -14,66 +36,57 @@ export default defineComponent({
 <template>
 <div class="script-editor">
 
-                <div class="script-source-panel">
-                    <div class="flex justify-between items-center mb-4">
-                        <h3>原文</h3>
+                <div class="script-source-panel" :class="{ 'is-compact': scriptLines.length > 0 && !sourceExpanded }">
+                    <div class="script-source-heading">
+                        <div class="script-source-title">
+                            <h3>原文</h3>
+                            <span v-if="rawScript.trim()">{{ rawScript.trim().length }} 字</span>
+                        </div>
+                        <button v-if="scriptLines.length > 0" type="button"
+                            class="script-source-toggle" :aria-expanded="sourceExpanded"
+                            @click="sourceExpanded = !sourceExpanded">
+                            {{ sourceExpanded ? '收起原文' : '展开编辑原文' }}
+                        </button>
                     </div>
 
-                    <textarea v-model="rawScript"
+                    <textarea v-if="sourceExpanded || scriptLines.length === 0" v-model="rawScript"
                         class="script-source-textarea"
                         placeholder="请粘贴小说内容或剧本原文..."></textarea>
-                    <div class="script-prep-grid">
-                        <!-- AI 拆分/分析 -->
-                        <div class="script-prep-panel analysis-panel">
-                            <div class="script-prep-title">AI 深度分析</div>
-                            <select v-model="currentConfigId"
-                                class="px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white w-full"
+                    <p v-else class="script-source-excerpt">{{ rawScript.trim() || '暂无原文，可展开补充。' }}</p>
+
+                    <div class="script-analysis-toolbar">
+                        <div class="script-analysis-model">
+                            <label for="script-analysis-model">分析模型</label>
+                            <select id="script-analysis-model" v-model="currentConfigId"
                                 title="选择用于分析的 LLM 模型">
                                 <option value="" disabled>-- 选择LLM模型 --</option>
                                 <option v-for="conf in llmConfigs" :key="conf.id" :value="conf.id">
                                     {{ conf.name }}
                                 </option>
                             </select>
-                            <button @click="analyzeScript"
-                                :class="['w-full px-3 py-2 text-white rounded-lg text-sm font-bold transition-all flex items-center justify-center', isAnalyzingScript ? 'bg-red-500 hover:bg-red-600' : 'bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50']">
-                                <svg v-if="!isAnalyzingScript" class="action-icon" aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#audio-lines"></use></svg>
-                                <span v-if="isAnalyzingScript" class="animate-spin mr-2">⏳</span>
-                                {{ isAnalyzingScript ? '停止分析' : 'AI 深度分析' }}
-                            </button>
                         </div>
-
-                        <!-- 插入控制块 -->
-                        <div class="script-prep-panel insert-panel">
-                            <div class="script-prep-title">插入控制块</div>
-                            <div class="flex flex-wrap gap-2">
-                                <button @click="addDialogueBlock"
-                                    class="px-2 py-2 bg-blue-100 text-blue-600 rounded-lg text-sm font-bold hover:bg-blue-200 transition-all">
-                                    <svg class="action-icon" aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#plus"></use></svg>插入台词
-                                </button>
-                                <button @click="addBgmBlock"
-                                    class="px-2 py-2 bg-purple-100 text-purple-600 rounded-lg text-sm font-bold hover:bg-purple-200 transition-all">
-                                    <svg class="action-icon" aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#plus"></use></svg>插入BGM
-                                </button>
-                                <button @click="addBgImageBlock"
-                                    class="px-2 py-2 bg-emerald-100 text-emerald-700 rounded-lg text-sm font-bold hover:bg-emerald-200 transition-all">
-                                    <svg class="action-icon" aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#plus"></use></svg>插入背景图片
-                                </button>
-                            </div>
-                            <div class="flex flex-wrap items-center gap-2 px-2 py-2 bg-white border border-slate-200 rounded-lg">
-                                <label class="text-[10px] font-bold text-slate-500 uppercase whitespace-nowrap">背景图片数量</label>
-                                <input type="number" v-model.number="bgImageCount" min="0" max="100"
-                                    class="w-20 px-2 py-1 border rounded-lg text-xs focus:ring-2 focus:ring-emerald-500 outline-none bg-white"
-                                    title="下次 AI 分析时插入的背景图片块数量；0 表示不插入" />
-                                <span class="text-[10px] text-slate-400 whitespace-nowrap">张</span>
-                                <span class="text-[10px] text-slate-400 ml-2">（0 张时不自动插入；已有图片块需手动删除）</span>
-                            </div>
-                        </div>
-
+                        <label class="script-image-count-setting">
+                            <span>背景图片</span>
+                            <input type="number" v-model.number="bgImageCount" min="0" max="100"
+                                title="下次 AI 分析时插入的背景图片块数量；0 表示不插入" />
+                            <span>张</span>
+                        </label>
+                        <button @click="handleAnalyzeScript" type="button"
+                            :class="['script-analyze-button', isAnalyzingScript ? 'is-stopping' : '']">
+                            <svg v-if="!isAnalyzingScript" class="action-icon" aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#audio-lines"></use></svg>
+                            <span v-if="isAnalyzingScript" class="animate-spin" aria-hidden="true">⏳</span>
+                            {{ isAnalyzingScript ? '停止分析' : (scriptLines.length ? '重新分析' : 'AI 深度分析') }}
+                        </button>
+                    </div>
+                    <p v-if="bgImageCount === 0" class="script-analysis-hint">0 张时不自动插入背景图片块；已有图片块需手动删除。</p>
+                    <div v-if="scriptLines.length === 0" class="script-manual-start">
+                        <span>或从空白内容块开始</span>
+                        <ScriptInsertActions />
                     </div>
                 </div>
 
                 <!-- 拆分结果列表 -->
-                <div v-if="scriptLines.length > 0"
+                <div v-if="scriptLines.length > 0" ref="scriptLinesPanelRef"
                     class="script-lines-panel"
                     :style="stageBgUrl ? {
                         backgroundImage: `linear-gradient(to bottom, rgba(255,255,255,0.76), rgba(255,255,255,0.58)), url(${stageBgUrl})`,
@@ -82,7 +95,8 @@ export default defineComponent({
                         backgroundSize: '100% 100%, contain'
                     } : {}">
                     <div class="script-lines-heading">
-                        <h3>台词编辑</h3><span>{{ scriptLines.length }} 个内容块</span>
+                        <div class="script-lines-title"><h3>台词编辑</h3><span>{{ scriptLines.length }} 个内容块</span></div>
+                        <ScriptInsertActions />
                     </div>
                     <div ref="scriptListContainer" class="script-line-list">
                         <div v-for="(line, index) in scriptLines" :key="line.id" @click="toggleLineSelection(index, $event)"
@@ -213,6 +227,10 @@ export default defineComponent({
                             <!-- 台词块 -->
                             <div v-else
                                 :class="['script-line-card script-dialogue-card flex flex-col gap-2 p-3 rounded-lg mb-2 transition-all group cursor-pointer border', selectedLineIndex === index ? 'bg-blue-50 border-blue-300 shadow-md' : 'bg-white border-slate-200 shadow-sm hover:bg-slate-50', currentSequenceIndex === index ? 'ring-2 ring-green-500' : '']">
+                                <div class="script-dialogue-status-row">
+                                    <span v-if="line.audioUrl" class="line-audio-status is-ready">已生成</span>
+                                    <span v-else class="line-audio-status">待生成</span>
+                                </div>
                                 <div class="flex flex-wrap items-stretch gap-3">
                                     <div
                                         class="flex flex-col items-center justify-center gap-1 w-8 flex-shrink-0 border-r border-slate-100 pr-2">
@@ -269,9 +287,6 @@ export default defineComponent({
                                             class="w-full px-1 py-1.5 text-xs border rounded bg-white focus:ring-1 focus:ring-blue-500 outline-none text-center font-mono text-slate-600"
                                             placeholder="0">
                                     </div>
-
-                                    <span v-if="line.audioUrl" class="line-audio-status is-ready">已生成</span>
-                                    <span v-else class="line-audio-status">待生成</span>
 
                                     <div class="flex-grow"></div>
 
