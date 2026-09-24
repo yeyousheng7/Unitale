@@ -42,3 +42,20 @@ export function auditAssetRecords(
   }
   return { assetCount: records.length, totalBytes, orphanCount: orphanKeys.length, orphanBytes, orphanKeys }
 }
+
+export function referencedAssetIds(project: ProjectSnapshot): Set<string> {
+  const ids = new Set<string>()
+  const add = (value: unknown) => { if (typeof value === 'string' && value) ids.add(value) }
+  for (const library of [project.libraries.sfx, project.libraries.bgm, project.libraries.timbres]) {
+    for (const item of library) add(item.assetId)
+  }
+  for (const character of project.characters) add(character.voiceAssetId)
+  for (const script of project.scriptList) {
+    for (const character of script.data.characters || []) add(character.voiceAssetId)
+    for (const line of script.data.scriptLines || []) {
+      add(line.audioAssetId)
+      add(line.bgImageAssetId)
+    }
+  }
+  return ids
+}
