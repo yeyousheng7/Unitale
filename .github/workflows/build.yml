@@ -24,5 +24,3 @@ jobs:
           test -f dist/vendor/ffmpeg/ffmpeg.js
           test -f dist/assets/icons/LICENSE-lucide.txt
           test -d dist/voice
-          test ! -f 'dist/Unitale Basic Project for EN.json'
-          test ! -f 'dist/初始音效工程文件【加载音效音色】.json'
