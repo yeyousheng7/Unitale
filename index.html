@@ -136,117 +136,117 @@
                 <main class="workspace-content">
 
         <!-- 页面 1: 模型配置 (LLM & TTS) -->
-        <div v-if="activeTab === 'config'" class="space-y-6">
-            <h2 class="text-lg font-bold text-slate-800 border-b pb-2">LLM 模型配置（OpenAI通用接口）</h2>
-            <!-- 添加/编辑表单 -->
-            <div class="bg-slate-50 p-5 rounded-xl border border-slate-200">
-                <h3 class="text-sm font-bold text-slate-700 mb-4">{{ isEditing ? '编辑配置' : '添加新配置' }}</h3>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                    <div>
-                        <label class="block text-[10px] font-bold text-slate-500 uppercase mb-1">配置名称</label>
-                        <input v-model="form.name"
-                            class="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
-                            placeholder="例如: Google Gemini">
-                    </div>
-                    <div>
-                        <label class="block text-[10px] font-bold text-slate-500 uppercase mb-1">模型名称</label>
-                        <input v-model="form.model"
-                            class="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
-                            placeholder="gemini-2.5-flash">
-                    </div>
-                    <div class="md:col-span-2">
-                        <label class="block text-[10px] font-bold text-slate-500 uppercase mb-1">Base URL</label>
-                        <input v-model="form.baseUrl"
-                            class="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
-                            placeholder="https://generativelanguage.googleapis.com/v1beta/openai">
-                    </div>
-                    <div class="md:col-span-2">
-                        <label class="block text-[10px] font-bold text-slate-500 uppercase mb-1">API Key</label>
-                        <input v-model="form.key" type="password"
-                            class="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
-                            placeholder="sk-...">
-                    </div>
-                    <div class="md:col-span-2">
-                        <label class="block text-[10px] font-bold text-slate-500 uppercase mb-1">额外参数
-                            (JSON格式，可选)</label>
-                        <input v-model="form.params"
-                            class="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
-                            placeholder='例如: {"temperature": 0.7, "max_tokens": 2000}'>
-                    </div>
-                </div>
-                <div class="flex gap-2">
-                    <button type="button" @click.prevent="saveConfig"
-                        class="px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-700 transition-all">保存配置</button>
-                    <button type="button" v-if="isEditing" @click="resetForm"
-                        class="px-4 py-2 bg-slate-200 text-slate-600 rounded-lg text-xs font-bold hover:bg-slate-300 transition-all">取消</button>
-                </div>
+        <div v-if="activeTab === 'config'" class="config-page">
+            <div class="config-page-intro">
+                <span class="config-eyebrow">工作区设置</span>
+                <h2>连接创作服务</h2>
+                <p>分别管理文本分析模型和语音合成服务，保存后可在脚本制作页选择。</p>
             </div>
 
-            <!-- 配置列表 -->
-            <div class="grid gap-3">
-                <div v-for="conf in llmConfigs" :key="conf.id"
-                    class="flex items-center justify-between p-4 bg-white border border-slate-200 rounded-xl hover:shadow-sm transition-shadow">
+            <section class="config-section" aria-labelledby="llm-config-title">
+                <div class="config-section-header">
+                    <span class="config-section-number">01</span>
                     <div>
-                        <div class="font-bold text-slate-800 text-sm">{{ conf.name }}</div>
-                        <div class="text-xs text-slate-400 mt-1">{{ conf.model }} | {{ conf.baseUrl }}</div>
-                    </div>
-                    <div class="flex gap-2">
-                        <button @click="editConfig(conf)"
-                            class="text-xs text-blue-600 hover:underline font-medium">编辑</button>
-                        <button @click="deleteConfig(conf.id)"
-                            class="text-xs text-red-500 hover:underline font-medium">删除</button>
+                        <h3 id="llm-config-title">文本分析模型</h3>
+                        <p>OpenAI 兼容接口，用于原文分析与台词整理。</p>
                     </div>
                 </div>
-                <div v-if="llmConfigs.length === 0" class="text-center py-8 text-slate-400 text-sm">
-                    暂无配置，请在上方添加
-                </div>
-            </div>
+                <div class="config-section-grid">
+                    <div class="config-saved-panel">
+                        <div class="config-panel-heading"><h4>已保存的模型</h4><span>{{ llmConfigs.length }}</span></div>
+                        <div class="config-list">
+                            <div v-for="conf in llmConfigs" :key="conf.id" class="config-list-item">
+                                <div class="config-list-item-main">
+                                    <strong>{{ conf.name }}</strong>
+                                    <span>{{ conf.model }}</span>
+                                    <small>{{ conf.baseUrl }}</small>
+                                </div>
+                                <div class="config-item-actions">
+                                    <button @click="editConfig(conf)">编辑</button>
+                                    <button @click="deleteConfig(conf.id)" class="is-danger">删除</button>
+                                </div>
+                            </div>
+                            <div v-if="llmConfigs.length === 0" class="config-empty">尚未添加文本分析模型</div>
+                        </div>
+                    </div>
 
-            <h2 class="text-lg font-bold text-slate-800 border-b pb-2 pt-6">TTS 语音合成配置</h2>
-            <!-- 添加/编辑表单 -->
-            <div class="bg-slate-50 p-5 rounded-xl border border-slate-200">
-                <h3 class="text-sm font-bold text-slate-700 mb-4">{{ isEditingTts ? '编辑 TTS 配置' : '添加新 TTS 配置' }}</h3>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                    <div>
-                        <label class="block text-[10px] font-bold text-slate-500 uppercase mb-1">配置名称</label>
-                        <input v-model="ttsForm.name"
-                            class="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
-                            placeholder="例如: IndexTTS 2">
-                    </div>
-                    <div>
-                        <label class="block text-[10px] font-bold text-slate-500 uppercase mb-1">Base URL</label>
-                        <input v-model="ttsForm.baseUrl"
-                            class="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
-                            placeholder="http://127.0.0.1:8300">
+                    <div class="config-editor-panel">
+                        <div class="config-panel-heading"><h4>{{ isEditing ? '编辑模型配置' : '添加模型配置' }}</h4></div>
+                        <div class="config-fields config-fields-two">
+                            <div class="config-field">
+                                <label for="llm-config-name">配置名称</label>
+                                <input id="llm-config-name" v-model="form.name" class="config-input" placeholder="例如：Google Gemini">
+                            </div>
+                            <div class="config-field">
+                                <label for="llm-config-model">模型名称</label>
+                                <input id="llm-config-model" v-model="form.model" class="config-input" placeholder="gemini-2.5-flash">
+                            </div>
+                            <div class="config-field config-field-full">
+                                <label for="llm-config-url">Base URL</label>
+                                <input id="llm-config-url" v-model="form.baseUrl" class="config-input" placeholder="https://generativelanguage.googleapis.com/v1beta/openai">
+                            </div>
+                            <div class="config-field config-field-full">
+                                <label for="llm-config-key">API Key</label>
+                                <input id="llm-config-key" v-model="form.key" type="password" class="config-input" placeholder="sk-...">
+                            </div>
+                            <div class="config-field config-field-full">
+                                <label for="llm-config-params">额外参数 <span>JSON，可选</span></label>
+                                <input id="llm-config-params" v-model="form.params" class="config-input" placeholder='例如：{"temperature": 0.7, "max_tokens": 2000}'>
+                            </div>
+                        </div>
+                        <div class="config-form-actions">
+                            <button type="button" @click.prevent="saveConfig" class="config-save-button">保存配置</button>
+                            <button type="button" v-if="isEditing" @click="resetForm" class="config-cancel-button">取消</button>
+                        </div>
                     </div>
                 </div>
-                <div class="flex gap-2">
-                    <button type="button" @click.prevent="saveTtsConfig"
-                        class="px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-700 transition-all">保存配置</button>
-                    <button type="button" v-if="isEditingTts" @click="resetTtsForm"
-                        class="px-4 py-2 bg-slate-200 text-slate-600 rounded-lg text-xs font-bold hover:bg-slate-300 transition-all">取消</button>
-                </div>
-            </div>
+            </section>
 
-            <!-- 配置列表 -->
-            <div class="grid gap-3">
-                <div v-for="conf in ttsConfigs" :key="conf.id"
-                    class="flex items-center justify-between p-4 bg-white border border-slate-200 rounded-xl hover:shadow-sm transition-shadow">
+            <section class="config-section" aria-labelledby="tts-config-title">
+                <div class="config-section-header">
+                    <span class="config-section-number">02</span>
                     <div>
-                        <div class="font-bold text-slate-800 text-sm">{{ conf.name }}</div>
-                        <div class="text-xs text-slate-400 mt-1">{{ conf.baseUrl }}</div>
-                    </div>
-                    <div class="flex gap-2">
-                        <button @click="editTtsConfig(conf)"
-                            class="text-xs text-blue-600 hover:underline font-medium">编辑</button>
-                        <button @click="deleteTtsConfig(conf.id)"
-                            class="text-xs text-red-500 hover:underline font-medium">删除</button>
+                        <h3 id="tts-config-title">语音合成服务</h3>
+                        <p>配置 TTS 服务地址，用于生成角色台词音频。</p>
                     </div>
                 </div>
-                <div v-if="ttsConfigs.length === 0" class="text-center py-8 text-slate-400 text-sm">
-                    暂无 TTS 配置，请在上方添加
+                <div class="config-section-grid">
+                    <div class="config-saved-panel">
+                        <div class="config-panel-heading"><h4>已保存的服务</h4><span>{{ ttsConfigs.length }}</span></div>
+                        <div class="config-list">
+                            <div v-for="conf in ttsConfigs" :key="conf.id" class="config-list-item">
+                                <div class="config-list-item-main">
+                                    <strong>{{ conf.name }}</strong>
+                                    <small>{{ conf.baseUrl }}</small>
+                                </div>
+                                <div class="config-item-actions">
+                                    <button @click="editTtsConfig(conf)">编辑</button>
+                                    <button @click="deleteTtsConfig(conf.id)" class="is-danger">删除</button>
+                                </div>
+                            </div>
+                            <div v-if="ttsConfigs.length === 0" class="config-empty">尚未添加语音合成服务</div>
+                        </div>
+                    </div>
+
+                    <div class="config-editor-panel">
+                        <div class="config-panel-heading"><h4>{{ isEditingTts ? '编辑服务配置' : '添加服务配置' }}</h4></div>
+                        <div class="config-fields">
+                            <div class="config-field">
+                                <label for="tts-config-name">配置名称</label>
+                                <input id="tts-config-name" v-model="ttsForm.name" class="config-input" placeholder="例如：IndexTTS 2">
+                            </div>
+                            <div class="config-field">
+                                <label for="tts-config-url">Base URL</label>
+                                <input id="tts-config-url" v-model="ttsForm.baseUrl" class="config-input" placeholder="http://127.0.0.1:8300">
+                            </div>
+                        </div>
+                        <div class="config-form-actions">
+                            <button type="button" @click.prevent="saveTtsConfig" class="config-save-button">保存配置</button>
+                            <button type="button" v-if="isEditingTts" @click="resetTtsForm" class="config-cancel-button">取消</button>
+                        </div>
+                    </div>
                 </div>
-            </div>
+            </section>
         </div>
 
         <!-- 页面 4: 音色资源库 -->
@@ -797,9 +797,12 @@
                         </button>
                         <div class="voice-secondary-actions">
                             <button v-if="!isSequencePlaying" @click="playScriptSequentially" class="secondary-action">
-                                {{ selectedLineIndex !== -1 ? '▶️ 从选中位置播放' : '▶️ 顺序播放' }}
+                                <svg class="secondary-action-icon" aria-hidden="true"><use href="./assets/icons/ui-icons.svg#play"></use></svg>
+                                {{ selectedLineIndex !== -1 ? '从选中位置播放' : '顺序播放' }}
                             </button>
-                            <button v-else @click="stopScriptSequentially" class="secondary-action is-danger">停止播放</button>
+                            <button v-else @click="stopScriptSequentially" class="secondary-action is-danger">
+                                <svg class="secondary-action-icon" aria-hidden="true"><use href="./assets/icons/ui-icons.svg#square"></use></svg>停止播放
+                            </button>
                             <button @click="clearAllGeneratedAudio" :disabled="isSequencePlaying || isGeneratingAll" class="secondary-action is-danger">清空配音</button>
                         </div>
                     </div>
