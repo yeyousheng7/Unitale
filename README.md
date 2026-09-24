@@ -21,9 +21,9 @@ npm run build
 npm run preview
 ```
 
-中文版使用 Vue 3、Vite、TypeScript 模块和构建版 Tailwind；英文版暂时保留独立页面。构建产物位于 `dist/`，包括两种语言的入口及运行所需的 `voice/`、`vendor/` 和本地图标。仓库不再附带示例工程文件；可从应用中导出或导入自己的工程 JSON。
+中英文页面共用 Vue 3、Vite、TypeScript 模块和构建版 Tailwind；`index_en.html` 仅提供英文入口。构建产物位于 `dist/`，包括两种语言的入口及运行所需的 `voice/`、`vendor/` 和本地图标。仓库不再附带示例工程文件；可从应用中导出或导入自己的工程 JSON。
 
-中英文共用应用的准备情况和后续迁移边界见[国际化迁移说明](docs/i18n-migration.md)。
+中英文共用应用的实现和数据兼容性见[国际化说明](docs/i18n-migration.md)。
 
 ## 数据与发布
 

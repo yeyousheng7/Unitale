@@ -15,4 +15,5 @@ export const storageKeys = {
   bgImageCount: 'unitale_bgImageCount',
   llmConfigId: 'unitale_llmConfigId',
   ttsConfigId: 'unitale_ttsConfigId',
+  generationLanguage: 'unitale_generationLanguage',
 } as const

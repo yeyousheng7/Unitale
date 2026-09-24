@@ -460,8 +460,8 @@ export default defineComponent({
                                 class="w-4 h-4 text-blue-600 rounded focus:ring-blue-500 cursor-pointer"
                                 :title='$t("启用/禁用此资源")'>
                             <div>
-                                <div class="font-bold text-slate-800 text-sm">{{ filter.name }}</div>
-                                <div class="text-xs text-slate-500 mt-0.5">{{ filter.description }}</div>
+                                <div class="font-bold text-slate-800 text-sm">{{ $displayBuiltIn(filter.name) }}</div>
+                                <div class="text-xs text-slate-500 mt-0.5">{{ $displayBuiltIn(filter.description) }}</div>
                                 <div class="text-[10px] text-slate-400 mt-1 font-mono">{{ filter.type }} | {{
                                     filter.type === 'distortion' ? `Amt:${filter.gain}` : `Freq:${filter.frequency}Hz`
                                     }}</div>
@@ -494,6 +494,16 @@ export default defineComponent({
                         <button @click="resetPrompt"
                             class="px-4 py-2 bg-slate-200 text-slate-600 rounded-lg text-xs font-bold hover:bg-slate-300 transition-all">{{ $t("恢复默认") }}</button>
                     </div>
+                </div>
+
+                <div class="mb-6 rounded-lg border border-slate-200 bg-white p-4">
+                    <label for="generation-language" class="mb-2 block text-sm font-bold text-slate-700">{{ $t('generation.languageLabel') }}</label>
+                    <select id="generation-language" v-model="generationLanguage"
+                        class="w-full max-w-xs rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800">
+                        <option value="zh">{{ $t('generation.chinese') }}</option>
+                        <option value="en">{{ $t('generation.english') }}</option>
+                    </select>
+                    <p class="mt-2 text-xs leading-5 text-slate-500">{{ $t('generation.languageHint') }}</p>
                 </div>
 
                 <h4 class="text-sm font-bold text-slate-600 mb-2">{{ $t("1. 剧本拆分与分析 Prompt") }}</h4>

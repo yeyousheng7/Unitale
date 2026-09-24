@@ -36,6 +36,9 @@ for (const [key, value] of en) {
     errors.push(`Placeholder mismatch: ${key}`)
   }
 }
+for (const key of zh.keys()) {
+  if (!en.has(key)) errors.push(`English translation missing: ${key}`)
+}
 
 // The workspace is still JavaScript with checkJs disabled; verify its message IDs here.
 const path = 'src/composables/useUnitaleWorkspace.js'

@@ -5,7 +5,14 @@ import { useI18n } from '../../i18n'
 
 export default defineComponent({
   setup() {
-    return { ...useWorkspace(), t: useI18n().t }
+    const { locale, setLocale, t } = useI18n()
+    function toggleLanguage() {
+      const next = locale.value === 'zh-CN' ? 'en-US' : 'zh-CN'
+      const target = new URL(next === 'en-US' ? 'index_en.html' : './', window.location.href)
+      window.history.replaceState(window.history.state, '', target.pathname + window.location.search + window.location.hash)
+      setLocale(next)
+    }
+    return { ...useWorkspace(), locale, t, toggleLanguage }
   },
 })
 </script>
@@ -58,6 +65,10 @@ export default defineComponent({
                         </button>
                     </div>
                 </nav>
+                <button type="button" class="sidebar-language" @click="toggleLanguage"
+                    :aria-label="locale === 'zh-CN' ? t('language.switchToEnglish') : t('language.switchToChinese')">
+                    {{ locale === 'zh-CN' ? 'EN' : '中' }}
+                </button>
                 <div class="sidebar-version">v1.5</div>
             </aside>
 </template>

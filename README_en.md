@@ -15,7 +15,7 @@ npm run dev
 
 Check the build with `npm run typecheck` and `npm run build`. Use `npm run preview` to inspect `dist/`.
 
-The Chinese page uses Vue 3, Vite, TypeScript modules, and built Tailwind CSS. The English page remains a standalone page for now. The build includes both pages and the required `voice/`, `vendor/`, and local icon assets. Sample project files are no longer bundled; import or export your own project JSON in the app.
+The Chinese and English pages share one Vue 3 app built with Vite, TypeScript modules, and Tailwind CSS. `index_en.html` is a small English entry page. The build includes both entries and the required `voice/`, `vendor/`, and local icon assets. Sample project files are no longer bundled; import or export your own project JSON in the app.
 
 ## Data and deployment
 

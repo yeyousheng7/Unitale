@@ -8,4 +8,5 @@ const app = createApp(App)
 const i18n = createI18n(document.documentElement.lang)
 app.provide(i18nKey, i18n)
 app.config.globalProperties.$t = i18n.t
+app.config.globalProperties.$displayBuiltIn = i18n.displayBuiltIn
 app.mount('#app')

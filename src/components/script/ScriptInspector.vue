@@ -96,7 +96,7 @@ export default defineComponent({
                         <div v-for="entry in pendingRows" :key="entry.line.id" class="production-pending-row">
                             <span class="production-pending-index">{{ $t('第 {index} 块', { index: entry.index + 1 }) }}</span>
                             <div class="production-pending-copy">
-                                <strong>{{ entry.line.role || $t('未分配角色') }}</strong>
+                                <strong>{{ entry.line.role ? $displayBuiltIn(entry.line.role) : $t('未分配角色') }}</strong>
                                 <span>{{ entry.line.text?.trim() || $t('（空台词）') }}</span>
                             </div>
                             <span :class="['production-pending-status', { 'is-missing-voice': entry.missingVoice }]">

@@ -53,21 +53,21 @@ export default defineComponent({
         <label class="dialogue-field">
           <span>{{ $t("角色") }}</span>
           <select v-model="line.role">
-            <option v-for="roleName in availableRoles" :key="roleName" :value="roleName">{{ roleName }}</option>
+            <option v-for="roleName in availableRoles" :key="roleName" :value="roleName">{{ $displayBuiltIn(roleName) }}</option>
           </select>
         </label>
         <label class="dialogue-field">
           <span>{{ $t("滤波器") }}</span>
           <select v-model="line.filter">
             <option value="">{{ $t("无滤波器") }}</option>
-            <option v-for="f in filterLibrary" :key="f.id" :value="f.name">{{ f.name }}</option>
+            <option v-for="f in filterLibrary" :key="f.id" :value="f.name">{{ $displayBuiltIn(f.name) }}</option>
           </select>
         </label>
         <label class="dialogue-field">
           <span>{{ $t("情绪") }}</span>
           <select v-model="line.emotion">
             <option value="" disabled>{{ $t("选择情绪") }}</option>
-            <option v-for="preset in emotionPresets" :key="preset.id" :value="preset.name">{{ preset.name }}</option>
+            <option v-for="preset in emotionPresets" :key="preset.id" :value="preset.name">{{ $displayBuiltIn(preset.name) }}</option>
           </select>
         </label>
         <label v-if="isSystemEmotion(line.emotion)" class="dialogue-field">

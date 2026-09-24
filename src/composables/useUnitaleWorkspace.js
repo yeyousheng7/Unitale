@@ -10,7 +10,16 @@ import { getAudioBlobFromUrl, getFileExtensionFromBlob, buildDialogueAudioFilter
 import { requestService } from '../services/api/client'
 
 export function useUnitaleWorkspace() {
-                  const { t: translateMessage } = useI18n();
+                  const { locale, t: translateMessage } = useI18n();
+                  const savedGenerationLanguage = localStorage.getItem(storageKeys.generationLanguage);
+                  const generationLanguage = ref(
+                      savedGenerationLanguage === 'zh' || savedGenerationLanguage === 'en'
+                          ? savedGenerationLanguage
+                          : locale.value === 'en-US' ? 'en' : 'zh'
+                  );
+                  watch(generationLanguage, value => {
+                      localStorage.setItem(storageKeys.generationLanguage, value);
+                  }, { immediate: true });
                   // --- System Emotions Definition ---
                   const SYSTEM_EMOTIONS = [
                       { id: 'sys_1', name: '高兴', vector: [1, 0, 0, 0, 0, 0, 0, 0] },
@@ -137,7 +146,7 @@ export function useUnitaleWorkspace() {
                   const selectedLineIndex = ref(-1);
 
                   // --- 多脚本管理逻辑 ---
-                  const scriptList = ref([{ id: 'default', name: '脚本 1', data: { rawScript: '', scriptLines: [], rawAnalysisResult: '', characters: [] } }]);
+                  const scriptList = ref([{ id: 'default', name: translateMessage('data.defaultScriptName', { number: 1 }), data: { rawScript: '', scriptLines: [], rawAnalysisResult: '', characters: [] } }]);
                   const currentScriptId = ref('default');
                   const editingScriptId = ref(null);
                   const scriptNameInputRefs = ref(/** @type {Record<string, any>} */ ({}));
@@ -184,7 +193,7 @@ export function useUnitaleWorkspace() {
                       const num = scriptList.value.length + 1;
                       const newScript = {
                           id: newId,
-                          name: `脚本 ${num}`,
+                          name: translateMessage('data.defaultScriptName', { number: num }),
                           data: { rawScript: '', scriptLines: [], rawAnalysisResult: '', characters: [] }
                       };
                       scriptList.value.push(newScript);
@@ -399,16 +408,27 @@ export function useUnitaleWorkspace() {
   \${rawScript}
   </novel_content>`;
 
-                  const customPromptTemplate = ref(defaultPromptTemplate);
+                  const englishAnalysisDirective = `# Final output-language rule for this run
+Write the generated narration, dialogue, character names, and image_prompt values in English. Translate non-English source content faithfully without omitting lines, speaker cues, or meaning. For narration, keep the role_name exactly "旁白" so existing voice assignments remain compatible; the interface displays it as "Narrator". Keep JSON keys, type/action values, emotion and intensity option names, and the names of listed BGM, SFX, and filter assets exactly as specified elsewhere in this prompt. This language rule takes precedence over Chinese-language examples, while all structural and block-count rules still apply.`;
+                  const getDefaultPromptTemplate = () => generationLanguage.value === 'en'
+                      ? `${defaultPromptTemplate}\n\n${englishAnalysisDirective}`
+                      : defaultPromptTemplate;
+                  const customPromptTemplate = ref(getDefaultPromptTemplate());
                   const useCustomPrompt = ref(false);
 
                   const defaultVoicePromptTemplate = `请根据以下小说片段，简要描述角色“\${charName}”的音色特征。\n要求：必须要带上性别，对音色的描述文本非常精炼，控制在20字以内。重点描述声音的物理质感（如声线粗细、年龄感、沙哑/清脆等），不要包含过多的性格或情绪描写。直接输出描述，不要废话。\n\n小说片段：\n\${rawScript}`;
+                  const englishVoicePromptTemplate = `Describe the physical voice qualities of character "\${charName}" in the following novel excerpt. Include gender, approximate age, pitch, texture, and any rasp or clarity. Keep the description concise, within 20 English words. Do not add personality traits, emotions, or commentary.\n\nNovel excerpt:\n\${rawScript}`;
+                  const getDefaultVoicePromptTemplate = () => generationLanguage.value === 'en'
+                      ? englishVoicePromptTemplate : defaultVoicePromptTemplate;
 
-                  const customVoicePromptTemplate = ref(defaultVoicePromptTemplate);
+                  const customVoicePromptTemplate = ref(getDefaultVoicePromptTemplate());
                   const useCustomVoicePrompt = ref(false);
 
                   const defaultQwenVoiceTextTemplate = "我是${charName}，初次见面，请多多指教。正在进行声线校准测试，一，二，三。这段音频将作为我的基准音色，希望能完美演绎接下来的故事，请多关照。";
-                  const customQwenVoiceTextTemplate = ref(defaultQwenVoiceTextTemplate);
+                  const englishQwenVoiceTextTemplate = "I am ${charName}. It's a pleasure to meet you, and I look forward to working with you. I am currently conducting a voice calibration test: one, two, three. This audio will serve as my baseline voice, and I hope to bring the upcoming stories to life.";
+                  const getDefaultQwenVoiceTextTemplate = () => generationLanguage.value === 'en'
+                      ? englishQwenVoiceTextTemplate : defaultQwenVoiceTextTemplate;
+                  const customQwenVoiceTextTemplate = ref(getDefaultQwenVoiceTextTemplate());
                   const useCustomQwenVoiceText = ref(false);
 
                   // --- 音频引擎与缓存 (Audio Engine & Cache) ---
@@ -764,7 +784,7 @@ export function useUnitaleWorkspace() {
                            const oldSingle = localStorage.getItem(storageKeys.legacyConfig);
                            if (oldSingle) {
                                const c = JSON.parse(oldSingle);
-                               llmConfigs.value.push({ ...c, id: Date.now().toString(), name: '默认配置' });
+                               llmConfigs.value.push({ ...c, id: Date.now().toString(), name: translateMessage('data.defaultConfiguration') });
                                localStorage.removeItem(storageKeys.legacyConfig);
                            }
                        }
@@ -867,7 +887,7 @@ export function useUnitaleWorkspace() {
                                    // Compatibility for older format
                                    scriptList.value = [{
                                        id: 'default',
-                                       name: '脚本 1',
+                                       name: translateMessage('data.defaultScriptName', { number: 1 }),
                                        data: {
                                            rawScript: projectData.rawScript || '',
                                            scriptLines: (projectData.scriptLines || []).map(lineData => ({ trimStart: 0, trimEnd: 1, ...lineData, imageUrl: '', audioUrl: '', isGenerating: false })),
@@ -1040,7 +1060,7 @@ export function useUnitaleWorkspace() {
                   const addCharacter = () => {
                       characters.value.push({
                           id: Date.now().toString(),
-                          name: '新角色',
+                          name: translateMessage('data.newCharacter'),
                           voiceFile: '', // Path for both display and synthesis
                           volume: 1.0
                       });
@@ -1065,7 +1085,8 @@ export function useUnitaleWorkspace() {
                       char.abortController = controller;
 
                       try {
-                          const templateToUse = useCustomVoicePrompt.value ? customVoicePromptTemplate.value : defaultVoicePromptTemplate;
+                          const templateToUse = useCustomVoicePrompt.value
+                              ? customVoicePromptTemplate.value : getDefaultVoicePromptTemplate();
                           const promptText = templateToUse
                               .replace(/\${charName}/g, char.name)
                               .replace(/\${rawScript}/g, rawScript.value.substring(0, 3000));
@@ -1124,7 +1145,8 @@ export function useUnitaleWorkspace() {
                           let baseUrl = cfg.baseUrl.trim().replace(/\/+$/, '');
                           if (baseUrl.endsWith('/v1')) baseUrl = baseUrl.slice(0, -3);
 
-                          const template = useCustomQwenVoiceText.value ? customQwenVoiceTextTemplate.value : defaultQwenVoiceTextTemplate;
+                          const template = useCustomQwenVoiceText.value
+                              ? customQwenVoiceTextTemplate.value : getDefaultQwenVoiceTextTemplate();
                           const textToUse = template.replace(/\${charName}/g, char.name).replace(/\${char\.name}/g, char.name);
 
                           const payload = {
@@ -2328,7 +2350,7 @@ export function useUnitaleWorkspace() {
                                   rawAnalysisResult.value = '';
                                   characters.value = [];
                                   scriptLines.value = [];
-                                  scriptList.value = [{ id: 'default', name: '脚本 1', data: { rawScript: '', scriptLines: [], rawAnalysisResult: '', characters: [] } }];
+                                  scriptList.value = [{ id: 'default', name: translateMessage('data.defaultScriptName', { number: 1 }), data: { rawScript: '', scriptLines: [], rawAnalysisResult: '', characters: [] } }];
                                   sfxLibrary.value = [];
                                   bgmLibrary.value = [];
                                   timbres.value = [];
@@ -2378,7 +2400,7 @@ export function useUnitaleWorkspace() {
                                       // 兼容旧版 v2.0 (如果存在)
                                       scriptList.value = [{
                                           id: 'default',
-                                          name: '脚本 1',
+                                          name: translateMessage('data.defaultScriptName', { number: 1 }),
                                           data: {
                                               rawScript: proj.rawScript || '',
                                               scriptLines: proj.scriptLines || [],
@@ -2507,7 +2529,7 @@ export function useUnitaleWorkspace() {
                                       // 初始化脚本列表
                                       scriptList.value = [{
                                           id: 'default',
-                                          name: '脚本 1',
+                                          name: translateMessage('data.defaultScriptName', { number: 1 }),
                                           data: { rawScript: rawScript.value, scriptLines: [], rawAnalysisResult: rawAnalysisResult.value }
                                       }];
                                       currentScriptId.value = 'default';
@@ -3648,7 +3670,7 @@ export function useUnitaleWorkspace() {
                           ? `, "sfx": [{"name": "${enabledSfx[0].name}", "position": 0.2}]`
                           : '';
 
-                      const templateToUse = useCustomPrompt.value ? customPromptTemplate.value : defaultPromptTemplate;
+                      const templateToUse = useCustomPrompt.value ? customPromptTemplate.value : getDefaultPromptTemplate();
                       let finalPrompt = templateToUse
                           .replace(/\${emotionList}/g, emotionList)
                           .replace(/\${sfxSection}/g, sfxSection)
@@ -4068,15 +4090,15 @@ export function useUnitaleWorkspace() {
 
                   const resetPrompt = () => {
                       if (confirm(translateMessage("确定要恢复默认 Prompt 吗？"))) {
-                          customPromptTemplate.value = defaultPromptTemplate;
-                          customVoicePromptTemplate.value = defaultVoicePromptTemplate;
+                          customPromptTemplate.value = getDefaultPromptTemplate();
+                          customVoicePromptTemplate.value = getDefaultVoicePromptTemplate();
                       }
                   };
 
                   const resetVoicePrompt = () => {
                       if (confirm(translateMessage("确定要恢复默认的音色分析 Prompt 吗？"))) {
-                          customVoicePromptTemplate.value = defaultVoicePromptTemplate;
-                          localStorage.setItem(storageKeys.voicePromptTemplate, defaultVoicePromptTemplate);
+                          customVoicePromptTemplate.value = getDefaultVoicePromptTemplate();
+                          localStorage.setItem(storageKeys.voicePromptTemplate, customVoicePromptTemplate.value);
                       }
                   };
 
@@ -4088,7 +4110,7 @@ export function useUnitaleWorkspace() {
 
                   const resetQwenVoiceText = () => {
                       if (confirm(translateMessage("确定要恢复默认文本吗？"))) {
-                          customQwenVoiceTextTemplate.value = defaultQwenVoiceTextTemplate;
+                          customQwenVoiceTextTemplate.value = getDefaultQwenVoiceTextTemplate();
                       }
                   };
 
@@ -4177,6 +4199,7 @@ export function useUnitaleWorkspace() {
                       scriptList, currentScriptId, switchScript, addScript, deleteScriptTab,
                       editingScriptId, startEditingScript, stopEditingScript, scriptNameInputRefs,
 
+                      generationLanguage,
                       customPromptTemplate, useCustomPrompt, savePrompt, resetPrompt,
                       customVoicePromptTemplate, useCustomVoicePrompt, saveVoicePrompt, resetVoicePrompt,
                       customQwenVoiceTextTemplate, useCustomQwenVoiceText, saveQwenVoiceText, resetQwenVoiceText,
