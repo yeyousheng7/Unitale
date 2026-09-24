@@ -1,0 +1,28 @@
+name: Build
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Verify static output
+        run: |
+          test -f dist/index.html
+          test -f dist/index_en.html
+          test -f dist/vendor/ffmpeg/ffmpeg.js
+          test -f dist/assets/icons/LICENSE-lucide.txt
+          test -d dist/voice
+          test ! -f 'dist/Unitale Basic Project for EN.json'
+          test ! -f 'dist/初始音效工程文件【加载音效音色】.json'

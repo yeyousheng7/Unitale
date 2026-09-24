@@ -19,6 +19,12 @@
 
 界面简洁，使用简单，能够一键生成，用户可以对生成的音频内容进行微调。
 
+### 开发与构建（yeyousheng7 fork）
+
+开发环境使用 Node.js 24。首次运行执行 `npm ci`，然后使用 `npm run dev`；提交前执行 `npm run typecheck` 和 `npm run build`，可用 `npm run preview` 检查静态构建产物。Vite 的仓库路径前缀为 `/Unitale/`。
+
+构建产物在 `dist/`：中文版由 Vue 组件构建，英文版 `index_en.html` 仍保留原有实现；`voice/`、`vendor/` 和本地图标会复制进去，两份大型示例工程 JSON 不会复制。GitHub Actions 会在 `dev` 分支检查构建；Pages 发布工作流只接受手动触发，在完成[人工验收清单](docs/acceptance.md)前不启用线上切换。使用 Pages 时须在仓库设置中将发布来源设为 GitHub Actions。
+
 ![主界面截图](界面图2.png)
 
 ### 工具在线使用页面（须自行配置LLM和云原生TTS项目的URL）：
@@ -115,4 +121,3 @@ BGM背景音乐资源库：
 支持导出/导入工程文件 (.json)，保存所有编辑状态。
 
 高度可配置: 自定义 Prompt 模板、情绪预设、音色库和音效素材库。
-

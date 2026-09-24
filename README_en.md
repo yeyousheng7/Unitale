@@ -1,4 +1,8 @@
 # Unitale AI Audiobook Maker
+
+### Development in the yeyousheng7 fork
+
+Use Node.js 24. Run `npm ci`, then `npm run dev`. Before publishing, run `npm run typecheck` and `npm run build`; `npm run preview` serves the static output. The Vite base path is `/Unitale/`. The Chinese page is built from Vue components, while `index_en.html` retains its existing implementation. The Pages workflow is manual and should be run only after the [acceptance checklist](docs/acceptance.md) has been completed.
 > 语言切换 / Language Switch: [中文版](README.md) | [English](README_en.md)
 > 
 [![](https://img.shields.io/badge/Author-sdsds222-orange.svg)](https://gitee.com/wangjiabin-x/uh5)
