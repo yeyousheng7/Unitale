@@ -132,7 +132,8 @@ watch(() => workspace.scriptLines.value.length, (length, previousLength) => {
 
     <div class="script-workspace-content">
       <ScriptEditor :view="activeView" @analysis-complete="activeView = 'characters'" />
-      <ScriptInspector :view="activeView" @edit-script="activeView = 'script'" @edit-line="openLine" />
+      <ScriptInspector :view="activeView" @edit-script="activeView = 'script'" @edit-line="openLine"
+        @edit-characters="activeView = 'characters'" />
     </div>
   </div>
 </template>
