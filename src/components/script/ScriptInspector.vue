@@ -2,14 +2,24 @@
 import { defineComponent } from 'vue'
 import { useWorkspace } from '../../context/workspace'
 
-export default defineComponent({ setup: useWorkspace })
+export default defineComponent({
+  props: { view: { type: String, required: true } },
+  emits: ['edit-script'],
+  setup(_props, { emit }) {
+    return { ...useWorkspace(), openScript: () => emit('edit-script') }
+  },
+})
 </script>
 
 <template>
-<aside class="script-inspector">
+<div v-show="view === 'characters' || view === 'production'" class="script-inspector">
                 <!-- 配音/生成/播放 -->
-                <div class="inspector-panel voice-panel">
+                <div v-show="view === 'production'" class="inspector-panel voice-panel">
                     <h3>配音与播放</h3>
+                    <div v-if="selectedLineIndex !== -1" class="production-selection">
+                        <span>从第 {{ Number(selectedLineIndex) + 1 }} 个内容块开始生成或播放</span>
+                        <button type="button" @click="openScript">返回台本调整</button>
+                    </div>
                     <label class="field-label" for="script-tts-config">TTS 服务</label>
                     <select id="script-tts-config" v-model="currentTtsConfigId"
                         class="voice-service-select"
@@ -39,8 +49,35 @@ export default defineComponent({ setup: useWorkspace })
                     </div>
                     <p class="voice-status" v-if="isGeneratingAll">正在生成当前脚本的配音…</p>
                 </div>
+                <div v-show="view === 'production'" class="inspector-panel production-export-panel">
+                    <div>
+                        <h3>导出成品</h3>
+                        <p>完成配音后，可导出音频、字幕或视频。</p>
+                    </div>
+                    <div class="production-export-actions">
+                        <button @click="exportAudio" :disabled="isExportingAudio" class="toolbar-button toolbar-button-primary">
+                            <svg v-if="isExportingAudio" class="animate-spin" aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#loader-circle"></use></svg>
+                            <svg v-else aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#download"></use></svg>
+                            {{ isExportingAudio ? (exportStatus || '处理中...') : '导出音频' }}
+                        </button>
+                        <button @click="exportSRT" :disabled="isExportingAudio" class="toolbar-button">导出 SRT 字幕</button>
+                    </div>
+                    <div class="production-video-actions">
+                        <label for="production-video-resolution">视频画面比例</label>
+                        <select id="production-video-resolution" v-model="videoResolution" class="toolbar-select">
+                            <option value="1920x1080">横屏 16:9</option>
+                            <option value="1080x1920">竖屏 9:16</option>
+                            <option value="1280x960">横屏 4:3</option>
+                            <option value="960x1280">竖屏 3:4</option>
+                        </select>
+                        <button @click="generateVideo" :disabled="isExportingAudio || isSequencePlaying || isGeneratingVideo" class="toolbar-button">
+                            <svg v-if="isGeneratingVideo" class="animate-spin" aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#loader-circle"></use></svg>
+                            {{ isGeneratingVideo ? (exportStatus || '生成视频...') : '生成视频' }}
+                        </button>
+                    </div>
+                </div>
                 <!-- 角色音色设置 -->
-                <div class="inspector-panel character-panel">
+                <div v-show="view === 'characters'" class="inspector-panel character-panel">
                     <h3 class="inspector-heading">
                         角色与音色
                         <button @click="addCharacter"
@@ -113,5 +150,5 @@ export default defineComponent({ setup: useWorkspace })
                         </div>
                     </div>
                 </div>
-            </aside>
+            </div>
 </template>

@@ -1,19 +1,16 @@
 <script lang="ts">
-import { defineComponent, nextTick, onBeforeUpdate, ref, watch } from 'vue'
+import { defineComponent, nextTick, onBeforeUpdate, ref } from 'vue'
 import { useWorkspace } from '../../context/workspace'
 import ScriptInsertActions from './ScriptInsertActions.vue'
 import ScriptDialogueCard from './ScriptDialogueCard.vue'
 
 export default defineComponent({
   components: { ScriptInsertActions, ScriptDialogueCard },
-  setup() {
+  props: { view: { type: String, required: true } },
+  emits: ['analysis-complete'],
+  setup(_props, { emit }) {
     const workspace = useWorkspace()
-    const sourceExpanded = ref(true)
     const scriptLinesPanelRef = ref<HTMLElement | null>(null)
-
-    watch(() => workspace.scriptLines.value, (lines) => {
-      sourceExpanded.value = lines.length === 0
-    }, { immediate: true, flush: 'post' })
 
     const handleAnalyzeScript = async () => {
       const stopping = workspace.isAnalyzingScript.value
@@ -23,37 +20,38 @@ export default defineComponent({
       const previousLines = workspace.scriptLines.value
       await workspace.analyzeScript()
       if (!stopping && workspace.scriptLines.value !== previousLines && workspace.scriptLines.value.length > 0) {
+        emit('analysis-complete')
         await nextTick()
         scriptLinesPanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
       }
     }
 
     onBeforeUpdate(() => { workspace.lineRefs.value = [] })
-    return { ...workspace, sourceExpanded, scriptLinesPanelRef, handleAnalyzeScript }
+    return { ...workspace, scriptLinesPanelRef, handleAnalyzeScript }
   },
 })
 </script>
 
 <template>
-<div class="script-editor">
+<div v-show="view === 'source' || view === 'script'" class="script-editor">
 
-                <div class="script-source-panel" :class="{ 'is-compact': scriptLines.length > 0 && !sourceExpanded }">
+                <div v-show="view === 'source'" class="script-source-panel">
                     <div class="script-source-heading">
                         <div class="script-source-title">
                             <h3>原文</h3>
                             <span v-if="rawScript.trim()">{{ rawScript.trim().length }} 字</span>
                         </div>
-                        <button v-if="scriptLines.length > 0" type="button"
-                            class="script-source-toggle" :aria-expanded="sourceExpanded"
-                            @click="sourceExpanded = !sourceExpanded">
-                            {{ sourceExpanded ? '收起原文' : '展开编辑原文' }}
+                        <div class="script-source-actions">
+                        <button type="button" @click="triggerImportTxt" :disabled="isExportingProject" class="toolbar-button">
+                            <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#upload"></use></svg>导入 TXT
                         </button>
+                        </div>
                     </div>
 
-                    <textarea v-if="sourceExpanded || scriptLines.length === 0" v-model="rawScript"
+                    <p class="script-source-help">在这里整理原文。分析后仍可返回修改；再次分析会提示覆盖当前台本。</p>
+                    <textarea v-model="rawScript"
                         class="script-source-textarea"
                         placeholder="请粘贴小说内容或剧本原文..."></textarea>
-                    <p v-else class="script-source-excerpt">{{ rawScript.trim() || '暂无原文，可展开补充。' }}</p>
 
                     <div class="script-analysis-toolbar">
                         <div class="script-analysis-model">
@@ -86,8 +84,14 @@ export default defineComponent({
                     </div>
                 </div>
 
+                <div v-if="scriptLines.length === 0" v-show="view === 'script'" class="script-empty-panel">
+                    <h3>台本还没有内容</h3>
+                    <p>从原文分析开始，或直接插入内容块。</p>
+                    <ScriptInsertActions />
+                </div>
+
                 <!-- 拆分结果列表 -->
-                <div v-if="scriptLines.length > 0" ref="scriptLinesPanelRef"
+                <div v-if="scriptLines.length > 0" v-show="view === 'script'" ref="scriptLinesPanelRef"
                     class="script-lines-panel"
                     :style="stageBgUrl ? {
                         backgroundImage: `linear-gradient(to bottom, rgba(255,255,255,0.76), rgba(255,255,255,0.58)), url(${stageBgUrl})`,
@@ -232,7 +236,7 @@ export default defineComponent({
                 </div>
 
                 <!-- 调试：显示原始 JSON -->
-                <details v-if="rawAnalysisResult" class="analysis-debug">
+                <details v-if="rawAnalysisResult" v-show="view === 'source'" class="analysis-debug">
                     <summary>AI 原始输出 <span>调试信息</span></summary>
                     <pre
                         class="bg-slate-800 text-slate-200 p-4 rounded-lg text-xs overflow-x-auto whitespace-pre-wrap max-h-64">{{ rawAnalysisResult }}</pre>

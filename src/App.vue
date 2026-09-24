@@ -5,11 +5,10 @@ import { workspaceKey, type WorkspaceContext } from './context/workspace'
 import AppSidebar from './components/layout/AppSidebar.vue'
 import WorkspaceToolbar from './components/layout/WorkspaceToolbar.vue'
 import ModelConfigPage from './components/config/ModelConfigPage.vue'
-import ScriptInspector from './components/script/ScriptInspector.vue'
-import ScriptEditor from './components/script/ScriptEditor.vue'
+import ScriptWorkspace from './components/script/ScriptWorkspace.vue'
 
 export default defineComponent({
-  components: { AppSidebar, WorkspaceToolbar, ModelConfigPage, ScriptInspector, ScriptEditor },
+  components: { AppSidebar, WorkspaceToolbar, ModelConfigPage, ScriptWorkspace },
   setup() {
     const workspace = useUnitaleWorkspace() as WorkspaceContext
     provide(workspaceKey, workspace)
@@ -488,16 +487,8 @@ export default defineComponent({
             </section>
         </div>
 
-        <!-- 页面 5: 脚本制作 (重构：左右分栏) -->
-        <div v-if="activeTab === 'script'" class="script-page">
-            <div class="script-workspace">
-            <!-- 右侧：角色与音色绑定栏 -->
-            <ScriptInspector />
-
-            <!-- 原文输入区域 -->
-            <ScriptEditor />
-        </div>
-        </div>
+        <!-- 当前脚本的内容与制作工作区 -->
+        <ScriptWorkspace v-if="activeTab === 'script'" />
 
         <!-- 页面 7: Prompt 管理 -->
         <div v-if="activeTab === 'prompt'" class="space-y-6">

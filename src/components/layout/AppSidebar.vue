@@ -18,43 +18,41 @@ export default defineComponent({ setup: useWorkspace })
                 </div>
 
                 <nav class="sidebar-nav" aria-label="主导航">
-                <button @click="activeTab = 'config'"
-                    :class="['nav-item', activeTab === 'config' ? 'is-active' : '']">
-                    <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#settings"></use></svg><span>模型配置</span>
-                </button>
-                <button @click="activeTab = 'timbres'"
-                    :class="['nav-item', activeTab === 'timbres' ? 'is-active' : '']">
-                    <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#audio-lines"></use></svg><span>音色资源库</span>
-                </button>
-                <button @click="activeTab = 'sfx'"
-                    :class="['nav-item', activeTab === 'sfx' ? 'is-active' : '']">
-                    <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#sliders-horizontal"></use></svg><span>音效与滤波器</span>
-                </button>
-                <button @click="activeTab = 'script'"
-                    :class="['nav-item', activeTab === 'script' ? 'is-active' : '']">
-                    <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#file-text"></use></svg><span>脚本制作</span>
-                </button>
-                <button @click="activeTab = 'prompt'"
-                    :class="['nav-item', activeTab === 'prompt' ? 'is-active' : '']">
-                    <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#message-square"></use></svg><span>Prompt 管理</span>
-                </button>
-                </nav>
-
-                <div v-if="activeTab === 'script'" class="sidebar-scripts">
-                    <div class="sidebar-section-title">脚本</div>
-                    <div class="script-nav-list">
-                        <div v-for="script in scriptList" :key="script.id"
-                            @click="switchScript(script.id)"
-                            @dblclick="startEditingScript(script.id)"
-                            :class="['script-nav-item group', currentScriptId === script.id ? 'is-active' : '']">
-                            <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#file-text"></use></svg>
-                            <span v-if="editingScriptId !== script.id" class="script-nav-name">{{ script.name }}</span>
-                            <input v-else v-model="script.name" @click.stop @blur="stopEditingScript" @keyup.enter="stopEditingScript" :ref="el => { if(el) scriptNameInputRefs[script.id] = el }" class="script-nav-input" />
-                            <button @click.stop="deleteScriptTab(script.id)" class="script-nav-delete" :aria-label="'删除' + script.name" title="删除脚本"><svg class="ui-icon" aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#x"></use></svg></button>
-                        </div>
+                    <div class="sidebar-nav-group">
+                        <div class="sidebar-nav-label">创作</div>
+                        <button @click="activeTab = 'script'"
+                            :class="['nav-item', activeTab === 'script' ? 'is-active' : '']"
+                            :aria-current="activeTab === 'script' ? 'page' : undefined">
+                            <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#file-text"></use></svg><span>创作台</span>
+                        </button>
                     </div>
-                    <button @click="addScript" class="add-script-button"><svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#plus"></use></svg>新增脚本</button>
-                </div>
+                    <div class="sidebar-nav-group">
+                        <div class="sidebar-nav-label">资源库</div>
+                        <button @click="activeTab = 'timbres'"
+                            :class="['nav-item', activeTab === 'timbres' ? 'is-active' : '']"
+                            :aria-current="activeTab === 'timbres' ? 'page' : undefined">
+                            <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#audio-lines"></use></svg><span>音色</span>
+                        </button>
+                        <button @click="activeTab = 'sfx'"
+                            :class="['nav-item', activeTab === 'sfx' ? 'is-active' : '']"
+                            :aria-current="activeTab === 'sfx' ? 'page' : undefined">
+                            <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#sliders-horizontal"></use></svg><span>音效与滤波器</span>
+                        </button>
+                    </div>
+                    <div class="sidebar-nav-group">
+                        <div class="sidebar-nav-label">设置</div>
+                        <button @click="activeTab = 'config'"
+                            :class="['nav-item', activeTab === 'config' ? 'is-active' : '']"
+                            :aria-current="activeTab === 'config' ? 'page' : undefined">
+                            <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#settings"></use></svg><span>模型配置</span>
+                        </button>
+                        <button @click="activeTab = 'prompt'"
+                            :class="['nav-item', activeTab === 'prompt' ? 'is-active' : '']"
+                            :aria-current="activeTab === 'prompt' ? 'page' : undefined">
+                            <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#message-square"></use></svg><span>Prompt 模板</span>
+                        </button>
+                    </div>
+                </nav>
                 <div class="sidebar-version">v1.5</div>
             </aside>
 </template>
