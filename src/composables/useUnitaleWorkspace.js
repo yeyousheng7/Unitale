@@ -310,7 +310,7 @@ export function useUnitaleWorkspace() {
                   const previewImageUrl = ref('');
                   const pendingBgImageLineIndex = ref(-1);
                   let playbackAnimationFrame = null;
-                  const isRestoring = ref(false); // 新增：恢复数据时的锁
+                  const isRestoring = ref(true); // 启动到存档恢复结束前禁止自动保存
 
                   const setStageBgUrlWithFade = (url) => {
                       const next = url || '';
