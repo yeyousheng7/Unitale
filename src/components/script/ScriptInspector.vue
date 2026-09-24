@@ -1,25 +1,63 @@
 <script lang="ts">
-import { defineComponent } from 'vue'
+import { computed, defineComponent } from 'vue'
 import { useWorkspace } from '../../context/workspace'
 
 export default defineComponent({
   props: { view: { type: String, required: true } },
-  emits: ['edit-script'],
+  emits: ['edit-script', 'edit-line'],
   setup(_props, { emit }) {
-    return { ...useWorkspace(), openScript: () => emit('edit-script') }
+    const workspace = useWorkspace()
+    const dialogueRows = computed(() => workspace.scriptLines.value
+      .map((line, index) => ({
+        line,
+        index,
+        missingVoice: !workspace.characters.value.some(char => char.name === line.role && char.voiceFile),
+      }))
+      .filter(entry => entry.line.type === 'dialogue'))
+    const pendingRows = computed(() => dialogueRows.value.filter(entry => !entry.line.audioUrl))
+    const generatedCount = computed(() => dialogueRows.value.length - pendingRows.value.length)
+    const missingVoiceCount = computed(() => pendingRows.value.filter(entry => entry.missingVoice).length)
+
+    return {
+      ...workspace,
+      dialogueRows,
+      pendingRows,
+      generatedCount,
+      missingVoiceCount,
+      openScript: () => emit('edit-script'),
+      openLine: (index: number) => emit('edit-line', index),
+    }
   },
 })
 </script>
 
 <template>
 <div v-show="view === 'characters' || view === 'production'" class="script-inspector">
+                <div v-show="view === 'production'" class="inspector-panel production-summary-panel">
+                    <div class="production-panel-heading">
+                        <div>
+                            <h3>配音进度</h3>
+                            <p>按当前脚本的台词统计，生成时会实时更新。</p>
+                        </div>
+                        <span v-if="isGeneratingAll" class="production-running">正在批量生成</span>
+                    </div>
+                    <div class="production-stat-grid">
+                        <div class="production-stat"><strong>{{ dialogueRows.length }}</strong><span>台词总数</span></div>
+                        <div class="production-stat"><strong>{{ generatedCount }}</strong><span>已有音频</span></div>
+                        <div class="production-stat"><strong>{{ pendingRows.length }}</strong><span>待生成</span></div>
+                        <div class="production-stat"><strong>{{ missingVoiceCount }}</strong><span>待生成且缺音色</span></div>
+                    </div>
+                    <p class="production-summary-note">“已有音频”仅表示音频文件存在。修改台词或音色后，请在台本中重新生成对应音频。</p>
+                </div>
                 <!-- 配音/生成/播放 -->
                 <div v-show="view === 'production'" class="inspector-panel voice-panel">
                     <h3>配音与播放</h3>
                     <div v-if="selectedLineIndex !== -1" class="production-selection">
                         <span>从第 {{ Number(selectedLineIndex) + 1 }} 个内容块开始生成或播放</span>
+                        <button type="button" @click="selectedLineIndex = -1">改为全篇</button>
                         <button type="button" @click="openScript">返回台本调整</button>
                     </div>
+                    <p v-else class="production-scope">批量生成处理全篇未生成的台词；顺序播放从开头开始。</p>
                     <label class="field-label" for="script-tts-config">TTS 服务</label>
                     <select id="script-tts-config" v-model="currentTtsConfigId"
                         class="voice-service-select"
@@ -74,6 +112,30 @@ export default defineComponent({
                             <svg v-if="isGeneratingVideo" class="animate-spin" aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#loader-circle"></use></svg>
                             {{ isGeneratingVideo ? (exportStatus || '生成视频...') : '生成视频' }}
                         </button>
+                    </div>
+                </div>
+                <div v-show="view === 'production'" class="inspector-panel production-pending-panel">
+                    <div class="production-panel-heading">
+                        <div>
+                            <h3>待处理台词</h3>
+                            <p>可返回台本定位并逐句生成或修改。</p>
+                        </div>
+                        <span class="production-pending-count">{{ pendingRows.length }} 条</span>
+                    </div>
+                    <p v-if="dialogueRows.length === 0" class="production-empty">当前脚本没有台词。请先在原文分析或台本编辑中添加内容。</p>
+                    <p v-else-if="pendingRows.length === 0" class="production-empty">所有台词都已有音频，请试听确认后再导出。</p>
+                    <div v-else class="production-pending-list">
+                        <div v-for="entry in pendingRows" :key="entry.line.id" class="production-pending-row">
+                            <span class="production-pending-index">第 {{ entry.index + 1 }} 块</span>
+                            <div class="production-pending-copy">
+                                <strong>{{ entry.line.role || '未分配角色' }}</strong>
+                                <span>{{ entry.line.text?.trim() || '（空台词）' }}</span>
+                            </div>
+                            <span :class="['production-pending-status', { 'is-missing-voice': entry.missingVoice }]">
+                                {{ entry.line.isGenerating ? '生成中' : entry.missingVoice ? '缺少音色' : '待生成' }}
+                            </span>
+                            <button type="button" class="production-edit-link" @click="openLine(entry.index)">去编辑</button>
+                        </div>
                     </div>
                 </div>
                 <!-- 角色音色设置 -->

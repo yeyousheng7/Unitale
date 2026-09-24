@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useWorkspace } from '../../context/workspace'
 import ScriptEditor from './ScriptEditor.vue'
 import ScriptInspector from './ScriptInspector.vue'
@@ -44,6 +44,16 @@ function deleteScript(id: string) {
 
 function handleOutsidePointerDown(event: PointerEvent) {
   if (scriptMenuRef.value && !scriptMenuRef.value.contains(event.target as Node)) closeScriptMenu()
+}
+
+async function openLine(index: number) {
+  workspace.selectedLineIndex.value = index
+  activeView.value = 'script'
+  await nextTick()
+  const container = workspace.scriptListContainer.value as HTMLElement | null
+  const row = (workspace.lineRefs.value[index] || container?.children[index]) as HTMLElement | undefined
+  row?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  row?.querySelector<HTMLTextAreaElement>('.dialogue-textarea')?.focus({ preventScroll: true })
 }
 
 onMounted(() => document.addEventListener('pointerdown', handleOutsidePointerDown))
@@ -105,24 +115,24 @@ watch(() => workspace.scriptLines.value.length, (length, previousLength) => {
           </details>
           <span class="script-workspace-count">{{ workspace.scriptLines.value.length }} 个内容块</span>
         </div>
-        <p>从原文整理台本，绑定角色音色，再完成配音与导出。</p>
+        <p>从原文分析开始，绑定角色音色，编辑台本，再完成配音导出。</p>
       </div>
     </div>
 
     <nav class="script-view-nav" aria-label="当前脚本工作区">
       <button type="button" :class="['script-view-link', { 'is-active': activeView === 'source' }]"
-        :aria-current="activeView === 'source' ? 'page' : undefined" @click="activeView = 'source'">原文与分析</button>
+        :aria-current="activeView === 'source' ? 'page' : undefined" @click="activeView = 'source'">原文分析</button>
+      <button type="button" :class="['script-view-link', { 'is-active': activeView === 'characters' }]"
+        :aria-current="activeView === 'characters' ? 'page' : undefined" @click="activeView = 'characters'">脚本角色</button>
       <button type="button" :class="['script-view-link', { 'is-active': activeView === 'script' }]"
         :aria-current="activeView === 'script' ? 'page' : undefined" @click="activeView = 'script'">台本编辑</button>
-      <button type="button" :class="['script-view-link', { 'is-active': activeView === 'characters' }]"
-        :aria-current="activeView === 'characters' ? 'page' : undefined" @click="activeView = 'characters'">本脚本角色</button>
       <button type="button" :class="['script-view-link', { 'is-active': activeView === 'production' }]"
-        :aria-current="activeView === 'production' ? 'page' : undefined" @click="activeView = 'production'">配音与导出</button>
+        :aria-current="activeView === 'production' ? 'page' : undefined" @click="activeView = 'production'">配音和导出</button>
     </nav>
 
     <div class="script-workspace-content">
-      <ScriptEditor :view="activeView" @analysis-complete="activeView = 'script'" />
-      <ScriptInspector :view="activeView" @edit-script="activeView = 'script'" />
+      <ScriptEditor :view="activeView" @analysis-complete="activeView = 'characters'" />
+      <ScriptInspector :view="activeView" @edit-script="activeView = 'script'" @edit-line="openLine" />
     </div>
   </div>
 </template>

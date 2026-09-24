@@ -1,5 +1,5 @@
 <script lang="ts">
-import { defineComponent, nextTick, onBeforeUpdate, ref } from 'vue'
+import { defineComponent, onBeforeUpdate } from 'vue'
 import { useWorkspace } from '../../context/workspace'
 import ScriptInsertActions from './ScriptInsertActions.vue'
 import ScriptDialogueCard from './ScriptDialogueCard.vue'
@@ -10,7 +10,6 @@ export default defineComponent({
   emits: ['analysis-complete'],
   setup(_props, { emit }) {
     const workspace = useWorkspace()
-    const scriptLinesPanelRef = ref<HTMLElement | null>(null)
 
     const handleAnalyzeScript = async () => {
       const stopping = workspace.isAnalyzingScript.value
@@ -21,13 +20,11 @@ export default defineComponent({
       await workspace.analyzeScript()
       if (!stopping && workspace.scriptLines.value !== previousLines && workspace.scriptLines.value.length > 0) {
         emit('analysis-complete')
-        await nextTick()
-        scriptLinesPanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
       }
     }
 
     onBeforeUpdate(() => { workspace.lineRefs.value = [] })
-    return { ...workspace, scriptLinesPanelRef, handleAnalyzeScript }
+    return { ...workspace, handleAnalyzeScript }
   },
 })
 </script>
@@ -91,7 +88,7 @@ export default defineComponent({
                 </div>
 
                 <!-- 拆分结果列表 -->
-                <div v-if="scriptLines.length > 0" v-show="view === 'script'" ref="scriptLinesPanelRef"
+                <div v-if="scriptLines.length > 0" v-show="view === 'script'"
                     class="script-lines-panel"
                     :style="stageBgUrl ? {
                         backgroundImage: `linear-gradient(to bottom, rgba(255,255,255,0.76), rgba(255,255,255,0.58)), url(${stageBgUrl})`,
