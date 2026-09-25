@@ -196,6 +196,10 @@ export async function importArchiveParts(files: Blob[], store: AssetStore): Prom
     }
     const remap = (item: Record<string, unknown>, key: string) => {
       if (typeof item[key] === 'string') {
+        if (item[key] === '') {
+          delete item[key]
+          return
+        }
         const next = idMap.get(item[key])
         if (!next) throw new Error(`Missing asset reference ${item[key]}`)
         item[key] = next

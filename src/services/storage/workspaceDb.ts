@@ -1,6 +1,7 @@
 import type { ProjectSnapshot, ScriptDocument } from '../../types/project'
 import type { AssetRef, AssetStore } from './assetStore'
 import { crc32OfBlob } from './assetStore'
+import { referencedAssetIds } from './audit'
 
 export const WORKSPACE_DB_NAME = 'UnitaleWorkspaceDB'
 export const WORKSPACE_DB_VERSION = 2
@@ -135,6 +136,77 @@ export function loadWorkspaceScript(id: string, projectId = DEFAULT_PROJECT_ID):
 export async function removeWorkspaceScript(id: string, projectId = DEFAULT_PROJECT_ID): Promise<void> {
   await transact<void>(['scripts'], 'readwrite', tx => {
     tx.objectStore('scripts').delete(`${projectId}:${id}`)
+  })
+}
+
+/** Remove an inactive IndexedDB project and media that no other project references. */
+export async function removeWorkspaceProject(projectId: string): Promise<void> {
+  if (!projectId) throw new Error('Project id is required')
+  const active = await getActiveWorkspace()
+  if (active.backend === 'indexeddb' && active.id === projectId) throw new Error('Cannot remove the active project')
+  await transact<void>(['settings', 'projects', 'scripts', 'assetMetadata', 'assetBlobs'], 'readwrite', tx => {
+    const settings = tx.objectStore('settings')
+    const projects = tx.objectStore('projects')
+    const scripts = tx.objectStore('scripts')
+    const activeRequest = settings.get('activeWorkspace')
+    const projectRequest = projects.getAll() as IDBRequest<ProjectHeader[]>
+    const scriptRequest = scripts.openCursor()
+    const scriptRecords = new Map<string, ScriptDocument>()
+    let scriptsRead = false
+
+    const finish = () => {
+      if (!scriptsRead || activeRequest.readyState !== 'done' || projectRequest.readyState !== 'done') return
+      const active = activeRequest.result as ActiveWorkspace | undefined
+      if ((active || { id: DEFAULT_PROJECT_ID, backend: 'indexeddb' }).backend === 'indexeddb' &&
+          (active?.id || DEFAULT_PROJECT_ID) === projectId) {
+        tx.abort()
+        return
+      }
+
+      const others = projectRequest.result.filter(project => project.id !== projectId)
+      const prefix = `${projectId}:`
+      const nestedOtherPrefixes = others.map(project => `${project.id}:`).filter(other => other.startsWith(prefix))
+      const otherScriptKeys = new Set(others.flatMap(project => project.scriptIds.map(id => `${project.id}:${id}`)))
+      const referencedByOtherProject = new Map<string, string>()
+      for (const project of others) {
+        const projectScripts = project.scriptIds.map(id => scriptRecords.get(`${project.id}:${id}`)).filter((script): script is ScriptDocument => !!script)
+        for (const id of referencedAssetIds({ ...project, scriptList: projectScripts })) {
+          if (!referencedByOtherProject.has(id)) referencedByOtherProject.set(id, project.id)
+        }
+      }
+
+      projects.delete(projectId)
+      for (const key of scriptRecords.keys()) {
+        if (key.startsWith(prefix) && !otherScriptKeys.has(key) && !nestedOtherPrefixes.some(other => key.startsWith(other))) scripts.delete(key)
+      }
+      const mediaRequest = tx.objectStore('assetMetadata').index('byProject').openCursor(IDBKeyRange.only(projectId))
+      mediaRequest.onsuccess = () => {
+        const cursor = mediaRequest.result
+        if (!cursor) return
+        const ref = cursor.value as AssetRef
+        const nextOwner = referencedByOtherProject.get(ref.id)
+        if (nextOwner) {
+          cursor.update({ ...ref, projectId: nextOwner })
+        } else {
+          cursor.delete()
+          tx.objectStore('assetBlobs').delete(ref.id)
+        }
+        cursor.continue()
+      }
+    }
+
+    activeRequest.onsuccess = finish
+    projectRequest.onsuccess = finish
+    scriptRequest.onsuccess = () => {
+      const cursor = scriptRequest.result
+      if (cursor) {
+        scriptRecords.set(String(cursor.key), cursor.value as ScriptDocument)
+        cursor.continue()
+      } else {
+        scriptsRead = true
+        finish()
+      }
+    }
   })
 }
 
