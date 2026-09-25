@@ -223,8 +223,8 @@ export default defineComponent({
                                 <span class="text-[10px] font-bold text-slate-500 uppercase w-16">{{ $t("默认音量") }}</span>
                                 <input type="range" v-model.number="sfxForm.volume" min="0" max="2" step="0.05" class="flex-1 h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600">
                                 <span class="text-xs text-slate-500 font-mono w-10 text-right">{{ Math.round((sfxForm.volume ?? 1) * 100) }}%</span>
-                                <button type="button" @click="playPreview(sfxForm)" :disabled="!sfxForm.filename" class="text-xs text-slate-400 hover:text-green-600 ml-2 disabled:opacity-30 disabled:cursor-not-allowed" :title='$t("试听")'>
-                                    <svg v-if="previewPlayingFile === sfxForm.filename" class="h-5 w-5 text-green-600" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                                <button type="button" @click="playPreview(sfxForm)" :disabled="!sfxForm.assetId && !sfxForm.filename" class="text-xs text-slate-400 hover:text-green-600 ml-2 disabled:opacity-30 disabled:cursor-not-allowed" :title='$t("试听")'>
+                                    <svg v-if="previewPlayingFile === (sfxForm.assetId ? `asset:${sfxForm.assetId}` : sfxForm.filename)" class="h-5 w-5 text-green-600" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
                                         <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM7 8a1 1 0 012 0v4a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd" />
                                     </svg>
                                     <svg v-else class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
@@ -233,12 +233,12 @@ export default defineComponent({
                                 </button>
                             </div>
 
-                            <div v-if="sfxForm.filename">
+                            <div v-if="sfxForm.assetId || sfxForm.filename">
                                 <div class="flex justify-between items-center px-0.5 mb-1">
                                     <span class="text-[10px] font-bold text-slate-500 uppercase">{{ $t("音频剪辑 (预览)") }}</span>
                                     <span class="text-[10px] text-slate-400 font-mono">{{ Math.round(((sfxForm.trimEnd ?? 1) - (sfxForm.trimStart ?? 0)) * 100) }}%</span>
                                 </div>
-                                <div :key="sfxForm.filename" class="relative w-full bg-slate-100 rounded border border-slate-200 overflow-hidden select-none group/wave" style="height: 40px;">
+                                <div :key="sfxForm.assetId || sfxForm.filename" class="relative w-full bg-slate-100 rounded border border-slate-200 overflow-hidden select-none group/wave" style="height: 40px;">
                                     <canvas :ref="(el) => drawWaveform(el, sfxForm)" width="300" height="40" class="w-full h-full block opacity-60"></canvas>
                                     <div class="absolute inset-0 pointer-events-none">
                                         <div class="absolute top-0 bottom-0 left-0 bg-slate-500/30 border-r border-blue-500" :style="{ width: (sfxForm.trimStart ?? 0) * 100 + '%' }"></div>
@@ -249,7 +249,7 @@ export default defineComponent({
                                         <div class="absolute top-0 bottom-0 w-4 -ml-2 cursor-ew-resize pointer-events-auto hover:bg-red-500/10 transition-colors flex justify-center group/handle" :style="{ left: (sfxForm.trimEnd ?? 1) * 100 + '%' }" @mousedown.stop="startDragTrim($event, sfxForm, 'end')">
                                             <div class="w-0.5 h-full bg-red-500 group-hover/handle:w-1 transition-all"></div>
                                         </div>
-                                        <div v-if="previewPlayingFile === sfxForm.filename" class="absolute top-0 bottom-0 w-0.5 bg-green-500 z-20 pointer-events-none shadow-[0_0_4px_rgba(34,197,94,0.8)]" :style="{ left: (playbackProgress * 100) + '%' }"></div>
+                                        <div v-if="previewPlayingFile === (sfxForm.assetId ? `asset:${sfxForm.assetId}` : sfxForm.filename)" class="absolute top-0 bottom-0 w-0.5 bg-green-500 z-20 pointer-events-none shadow-[0_0_4px_rgba(34,197,94,0.8)]" :style="{ left: (playbackProgress * 100) + '%' }"></div>
                                     </div>
                                 </div>
                                 <div class="text-[10px] text-slate-400 mt-1 text-right">{{ $t("提示：拖动红蓝线条裁剪音频，点击保存后生效") }}</div>
@@ -277,7 +277,7 @@ export default defineComponent({
                             </div>
                             <div class="flex gap-2 flex-shrink-0 ml-2">
                                 <button @click="playPreview(sfx)" class="text-xs text-slate-400 hover:text-green-600 mr-1" :title='$t("试听")'>
-                                    <svg v-if="previewPlayingFile === sfx.filename" class="h-4 w-4 text-green-600" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                                    <svg v-if="previewPlayingFile === (sfx.assetId ? `asset:${sfx.assetId}` : sfx.filename)" class="h-4 w-4 text-green-600" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
                                         <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM7 8a1 1 0 012 0v4a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd" />
                                     </svg>
                                     <svg v-else class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
@@ -328,8 +328,8 @@ export default defineComponent({
                                 <span class="text-[10px] font-bold text-slate-500 uppercase w-16">{{ $t("默认音量") }}</span>
                                 <input type="range" v-model.number="bgmForm.volume" min="0" max="2" step="0.05" class="flex-1 h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600">
                                 <span class="text-xs text-slate-500 font-mono w-10 text-right">{{ Math.round((bgmForm.volume ?? 1) * 100) }}%</span>
-                                <button type="button" @click="playPreview(bgmForm)" :disabled="!bgmForm.filename" class="text-xs text-slate-400 hover:text-green-600 ml-2 disabled:opacity-30 disabled:cursor-not-allowed" :title='$t("试听")'>
-                                    <svg v-if="previewPlayingFile === bgmForm.filename" class="h-5 w-5 text-green-600" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                                <button type="button" @click="playPreview(bgmForm)" :disabled="!bgmForm.assetId && !bgmForm.filename" class="text-xs text-slate-400 hover:text-green-600 ml-2 disabled:opacity-30 disabled:cursor-not-allowed" :title='$t("试听")'>
+                                    <svg v-if="previewPlayingFile === (bgmForm.assetId ? `asset:${bgmForm.assetId}` : bgmForm.filename)" class="h-5 w-5 text-green-600" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
                                         <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM7 8a1 1 0 012 0v4a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd" />
                                     </svg>
                                     <svg v-else class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
@@ -338,12 +338,12 @@ export default defineComponent({
                                 </button>
                             </div>
 
-                            <div v-if="bgmForm.filename">
+                            <div v-if="bgmForm.assetId || bgmForm.filename">
                                 <div class="flex justify-between items-center px-0.5 mb-1">
                                     <span class="text-[10px] font-bold text-slate-500 uppercase">{{ $t("音频剪辑 (预览)") }}</span>
                                     <span class="text-[10px] text-slate-400 font-mono">{{ Math.round(((bgmForm.trimEnd ?? 1) - (bgmForm.trimStart ?? 0)) * 100) }}%</span>
                                 </div>
-                                <div :key="bgmForm.filename" class="relative w-full bg-slate-100 rounded border border-slate-200 overflow-hidden select-none group/wave" style="height: 40px;">
+                                <div :key="bgmForm.assetId || bgmForm.filename" class="relative w-full bg-slate-100 rounded border border-slate-200 overflow-hidden select-none group/wave" style="height: 40px;">
                                     <canvas :ref="(el) => drawWaveform(el, bgmForm)" width="300" height="40" class="w-full h-full block opacity-60"></canvas>
                                     <div class="absolute inset-0 pointer-events-none">
                                         <div class="absolute top-0 bottom-0 left-0 bg-slate-500/30 border-r border-blue-500" :style="{ width: (bgmForm.trimStart ?? 0) * 100 + '%' }"></div>
@@ -354,7 +354,7 @@ export default defineComponent({
                                         <div class="absolute top-0 bottom-0 w-4 -ml-2 cursor-ew-resize pointer-events-auto hover:bg-red-500/10 transition-colors flex justify-center group/handle" :style="{ left: (bgmForm.trimEnd ?? 1) * 100 + '%' }" @mousedown.stop="startDragTrim($event, bgmForm, 'end')">
                                             <div class="w-0.5 h-full bg-red-500 group-hover/handle:w-1 transition-all"></div>
                                         </div>
-                                        <div v-if="previewPlayingFile === bgmForm.filename" class="absolute top-0 bottom-0 w-0.5 bg-green-500 z-20 pointer-events-none shadow-[0_0_4px_rgba(34,197,94,0.8)]" :style="{ left: (playbackProgress * 100) + '%' }"></div>
+                                        <div v-if="previewPlayingFile === (bgmForm.assetId ? `asset:${bgmForm.assetId}` : bgmForm.filename)" class="absolute top-0 bottom-0 w-0.5 bg-green-500 z-20 pointer-events-none shadow-[0_0_4px_rgba(34,197,94,0.8)]" :style="{ left: (playbackProgress * 100) + '%' }"></div>
                                     </div>
                                 </div>
                                 <div class="text-[10px] text-slate-400 mt-1 text-right">{{ $t("提示：拖动红蓝线条裁剪音频，点击保存后生效") }}</div>
@@ -382,7 +382,7 @@ export default defineComponent({
                             </div>
                             <div class="flex gap-2 flex-shrink-0 ml-2">
                                 <button @click="playPreview(bgm)" class="text-xs text-slate-400 hover:text-green-600 mr-1" :title='$t("试听")'>
-                                    <svg v-if="previewPlayingFile === bgm.filename" class="h-4 w-4 text-green-600" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                                    <svg v-if="previewPlayingFile === (bgm.assetId ? `asset:${bgm.assetId}` : bgm.filename)" class="h-4 w-4 text-green-600" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
                                         <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM7 8a1 1 0 012 0v4a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd" />
                                     </svg>
                                     <svg v-else class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">

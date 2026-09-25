@@ -1,6 +1,6 @@
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useI18n } from '../i18n'
-import { indexedDbAssetStore, openWorkspaceDB, saveWorkspaceProject, loadWorkspaceProject, removeWorkspaceScript, getActiveWorkspace, setActiveWorkspace, setActiveProjectId, storeRecentDirectory, loadRecentDirectory, DEFAULT_PROJECT_ID } from '../services/storage/workspaceDb'
+import { indexedDbAssetStore, openWorkspaceDB, saveWorkspaceProject, loadWorkspaceProject, removeWorkspaceScript, removeWorkspaceProject, getActiveWorkspace, setActiveWorkspace, setActiveProjectId, storeRecentDirectory, loadRecentDirectory, DEFAULT_PROJECT_ID } from '../services/storage/workspaceDb'
 import { DirectoryProjectStore, ensureDirectoryPermission } from '../services/storage/directoryStore'
 import { referencedAssetIds, auditAssetRecords } from '../services/storage/audit'
 import { collectOrphanAssets } from '../services/storage/garbageCollect'
@@ -12,6 +12,9 @@ import { ensureFFmpegLoaded, runFFmpegTask, getMp4Muxer } from '../services/audi
 import { DecodedAudioCache, audioBufferBytes } from '../services/audio/decodedCache'
 import { makeWavHeader, frameRanges, WAV_MAX_DATA_BYTES, AUDIO_EXPORT_PART_SECONDS } from '../services/audio/wav'
 import { getAudioBlobFromUrl, getFileExtensionFromBlob, buildDialogueAudioFilter } from '../services/audio/processing'
+import { clipAudioEvent, totalTimelineDuration } from '../services/audio/timeline'
+import { createAudioDecodeQueue } from '../services/audio/decodeQueue'
+import { matchLibraryId } from '../services/audio/libraryRefs'
 import { requestService } from '../services/api/client'
 
 export function useUnitaleWorkspace() {
@@ -43,6 +46,7 @@ export function useUnitaleWorkspace() {
                   const deletedScriptIds = new Set();
                   let collectOrphansAfterSave = false;
                   const pendingAssetIds = new Set();
+                  let activeScriptTasks = 0;
                   let orphanSweepTimer = null;
                   let saveQueue = Promise.resolve();
                   const activeProjectId = ref(DEFAULT_PROJECT_ID);
@@ -72,16 +76,26 @@ export function useUnitaleWorkspace() {
                               emotions: emotionPresets.value
                           }
                       }, changed);
-                      if (directoryStore) {
-                          await directoryStore.saveProject(projectData, changed);
-                      } else {
-                          await saveWorkspaceProject(projectData, changed, activeProjectId.value);
-                          for (const id of deletedScriptIds) await removeWorkspaceScript(id, activeProjectId.value);
-                      }
+                      const deleted = new Set(deletedScriptIds);
+                      const shouldCollectOrphans = collectOrphansAfterSave;
                       for (const id of changed) dirtyScriptIds.delete(id);
-                      deletedScriptIds.clear();
-                      if (collectOrphansAfterSave) {
-                          collectOrphansAfterSave = false;
+                      for (const id of deleted) deletedScriptIds.delete(id);
+                      collectOrphansAfterSave = false;
+                      try {
+                          if (directoryStore) {
+                              await directoryStore.saveProject(projectData, changed);
+                          } else {
+                              await saveWorkspaceProject(projectData, changed, activeProjectId.value);
+                              for (const id of deleted) await removeWorkspaceScript(id, activeProjectId.value);
+                          }
+                      } catch (error) {
+                          for (const id of changed) dirtyScriptIds.add(id);
+                          for (const id of deleted) deletedScriptIds.add(id);
+                          collectOrphansAfterSave ||= shouldCollectOrphans;
+                          throw error;
+                      }
+                      if (shouldCollectOrphans && dirtyScriptIds.size) collectOrphansAfterSave = true;
+                      if (shouldCollectOrphans && !dirtyScriptIds.size && !collectOrphansAfterSave) {
                           await collectOrphanAssets(activeAssetStore, activeProjectId.value, projectData, protectedAssetIds());
                           if (orphanSweepTimer) clearTimeout(orphanSweepTimer);
                           const projectId = activeProjectId.value;
@@ -146,12 +160,12 @@ export function useUnitaleWorkspace() {
                   const isEditingEmotion = ref(false);
                   // 音效库状态
                   const sfxLibrary = ref(/** @type {any[]} */ ([]));
-                  const sfxForm = ref({ id: '', name: '', description: '', filename: '', trimStart: 0, trimEnd: 1, volume: 0.3 });
+                  const sfxForm = ref({ id: '', name: '', description: '', filename: '', assetId: '', trimStart: 0, trimEnd: 1, volume: 0.3 });
                   const isEditingSfx = ref(false);
 
                   // BGM库状态
                   const bgmLibrary = ref(/** @type {any[]} */ ([]));
-                  const bgmForm = ref({ id: '', name: '', description: '', filename: '', trimStart: 0, trimEnd: 1, volume: 0.3 });
+                  const bgmForm = ref({ id: '', name: '', description: '', filename: '', assetId: '', trimStart: 0, trimEnd: 1, volume: 0.3 });
                   const isEditingBgm = ref(false);
 
                   // 滤波器库状态
@@ -211,7 +225,7 @@ export function useUnitaleWorkspace() {
                   };
 
                   const switchScript = (id) => {
-                      if (isAnalyzingScript.value || isGeneratingAll.value || isSequencePlaying.value) {
+                      if (hasActiveMediaTask()) {
                           return alert(translateMessage("请先停止当前的生成或播放任务，再切换脚本。"));
                       }
                       if (id === currentScriptId.value) return;
@@ -235,7 +249,7 @@ export function useUnitaleWorkspace() {
                   };
 
                   const addScript = () => {
-                      if (isAnalyzingScript.value || isGeneratingAll.value || isSequencePlaying.value) {
+                      if (hasActiveMediaTask()) {
                           return alert(translateMessage("请先停止当前的生成或播放任务，再添加脚本。"));
                       }
                       syncCurrentScriptState();
@@ -259,12 +273,13 @@ export function useUnitaleWorkspace() {
                   };
 
                   const stopEditingScript = () => {
+                      if (editingScriptId.value) dirtyScriptIds.add(editingScriptId.value);
                       editingScriptId.value = null;
                       triggerAutoSave();
                   };
 
                   const deleteScriptTab = (id) => {
-                      if (isAnalyzingScript.value || isGeneratingAll.value || isSequencePlaying.value) {
+                      if (hasActiveMediaTask()) {
                           return alert(translateMessage("请先停止当前的生成或播放任务，再删除脚本。"));
                       }
                       if (scriptList.value.length <= 1) return alert(translateMessage("至少保留一个脚本"));
@@ -273,6 +288,7 @@ export function useUnitaleWorkspace() {
                       const idx = scriptList.value.findIndex(s => s.id === id);
                       if (idx === -1) return;
 
+                      releaseScriptMedia(scriptList.value[idx]);
                       if (id === currentScriptId.value) {
                           const nextIdx = idx === 0 ? 1 : idx - 1;
                           switchScript(scriptList.value[nextIdx].id);
@@ -491,9 +507,11 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   let videoRecordingAudioDestination = null;
                   const getAudioOutputNode = () => videoRecordingAudioDestination || audioContext.destination;
                   const decodedCache = new DecodedAudioCache();
+                  const queueAudioDecode = createAudioDecodeQueue();
                   const objectUrls = new ObjectUrlManager();
                   const mediaOwner = (scriptId, line, field) => `${scriptId}:${line.id}:${field}`;
                   let mediaGeneration = 0;
+                  let isWorkspaceUnmounted = false;
                   const audioBufferCache = {
                       has: key => decodedCache.has(`source:${key}`),
                       get: key => decodedCache.get(`source:${key}`),
@@ -518,29 +536,52 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   };
                   const processedDialogueBufferPromiseCache = new Map();
                   const hydrateScriptMedia = async (script) => {
-                      const generation = mediaGeneration;
+                      const store = activeAssetStore;
                       for (const line of script?.data?.scriptLines || []) {
-                          if (generation !== mediaGeneration || script.id !== currentScriptId.value) return;
-                          const id = line.type === 'dialogue' ? line.audioAssetId : line.type === 'bgImage' ? line.bgImageAssetId : null;
+                          if (isWorkspaceUnmounted || script.id !== currentScriptId.value || !scriptList.value.includes(script)) return;
+                          const id = line.type === 'bgImage' ? line.bgImageAssetId : null;
                           if (!id) continue;
                           const urlField = line.type === 'dialogue' ? 'audioUrl' : 'imageUrl';
                           if (line[urlField]) continue;
-                          const blob = await activeAssetStore.get(id);
-                          if (generation !== mediaGeneration || script.id !== currentScriptId.value) return;
+                          const blob = await store.get(id);
+                          if (isWorkspaceUnmounted || store !== activeAssetStore || script.id !== currentScriptId.value ||
+                              !scriptList.value.includes(script) ||
+                              !script.data.scriptLines.includes(line) || line[urlField] ||
+                              (line.type === 'dialogue' ? line.audioAssetId : line.bgImageAssetId) !== id) return;
                           if (blob) line[urlField] = objectUrls.create(mediaOwner(script.id, line, urlField), blob);
                       }
                   };
-                  const releaseScriptMedia = (script) => {
+                  const releaseLineMedia = (scriptId, line) => {
                       mediaGeneration++;
-                      processedDialogueAssetCache.deletePrefix(`${script?.id}|`);
-                      objectUrls.releasePrefix(`processed:${script?.id}|`);
-                      for (const line of script?.data?.scriptLines || []) {
-                          for (const field of ['audioUrl', 'imageUrl']) {
-                              if (field === 'audioUrl' && line[field]) audioBufferCache.delete(line[field]);
-                              objectUrls.release(mediaOwner(script.id, line, field));
-                              line[field] = '';
-                          }
+                      if (line.audioAssetId) audioBufferCache.delete(`asset:${line.audioAssetId}`);
+                      processedDialogueAssetCache.deletePrefix(`${scriptId}|${line.id}|`);
+                      objectUrls.releasePrefix(`processed:${scriptId}|${line.id}|`);
+                      for (const field of ['audioUrl', 'imageUrl']) {
+                          if (field === 'audioUrl' && line[field]) audioBufferCache.delete(line[field]);
+                          objectUrls.release(mediaOwner(scriptId, line, field));
+                          line[field] = '';
                       }
+                  };
+                  const ensureLineAudioUrl = async line => {
+                      if (!line?.audioAssetId) return null;
+                      if (line.audioUrl) return line.audioUrl;
+                      const scriptId = currentScriptId.value;
+                      const assetId = line.audioAssetId;
+                      const store = activeAssetStore;
+                      const generation = mediaGeneration;
+                      const blob = await store.get(assetId);
+                      if (!blob || isWorkspaceUnmounted || generation !== mediaGeneration ||
+                          scriptId !== currentScriptId.value || store !== activeAssetStore ||
+                          line.audioAssetId !== assetId || !scriptLines.value.includes(line)) return null;
+                      if (!line.audioUrl) line.audioUrl = objectUrls.create(mediaOwner(scriptId, line, 'audioUrl'), blob);
+                      return line.audioUrl;
+                  };
+                  const releaseScriptMedia = (script) => {
+                      if (!script) return;
+                      const lines = new Set(script.data?.scriptLines || []);
+                      if (script.id === currentScriptId.value) for (const line of scriptLines.value) lines.add(line);
+                      for (const line of lines) releaseLineMedia(script.id, line);
+                      mediaGeneration++;
                   };
                   const storageAudit = ref(/** @type {any} */ (null));
                   const refreshStorageAudit = async () => {
@@ -570,17 +611,23 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   // FFmpeg lifecycle and queue live in the audio adapter.
                   // Audio conversion helpers live in the audio service.
                   const getProcessedDialogueAsset = async (line) => {
-                      if (!line?.audioUrl) return null;
-                      const sourceBuffer = await loadAudioBuffer(line.audioUrl);
-                      if (!sourceBuffer) return null;
+                      if (!line?.audioAssetId) return null;
+                      const scriptId = currentScriptId.value;
+                      const sourceUrl = await ensureLineAudioUrl(line);
+                      if (!sourceUrl) return null;
+                      const generation = mediaGeneration;
+                      const isCurrent = () => generation === mediaGeneration &&
+                          !isWorkspaceUnmounted && scriptId === currentScriptId.value && line.audioUrl === sourceUrl && scriptLines.value.includes(line);
+                      const sourceBuffer = await loadAudioBuffer(sourceUrl);
+                      if (!sourceBuffer || !isCurrent()) return null;
 
                       const trimStart = line.trimStart || 0;
                       const trimEnd = line.trimEnd || 1;
                       const speed = line.speed || 1.0;
                       const cacheKey = [
-                          currentScriptId.value,
+                          scriptId,
                           line.id,
-                          line.audioUrl,
+                          sourceUrl,
                           sourceBuffer.length,
                           sourceBuffer.sampleRate,
                           trimStart,
@@ -591,7 +638,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       if (processedDialogueAssetCache.has(cacheKey)) {
                           return processedDialogueAssetCache.get(cacheKey);
                       }
-                      processedDialogueAssetCache.deletePrefix(`${currentScriptId.value}|${line.id}|`);
+                      processedDialogueAssetCache.deletePrefix(`${scriptId}|${line.id}|`);
                       if (processedDialogueBufferPromiseCache.has(cacheKey)) {
                           return processedDialogueBufferPromiseCache.get(cacheKey);
                       }
@@ -602,12 +649,13 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           const endSec = Math.max(startSec + 0.01, sourceBuffer.duration * trimEnd);
 
                           if (Math.abs(safeSpeed - 1) < 0.001 && trimStart <= 0.0001 && trimEnd >= 0.9999) {
-                              const originalBlob = await getAudioBlobFromUrl(line.audioUrl);
+                              const originalBlob = await getAudioBlobFromUrl(sourceUrl);
+                              if (!isCurrent()) return null;
                               const processedBuffer = sourceBuffer;
                               const asset = {
                                   buffer: processedBuffer,
                                   blob: originalBlob,
-                                  url: line.audioUrl,
+                                  url: sourceUrl,
                                   ownsUrl: false,
                                   duration: processedBuffer.duration
                               };
@@ -616,7 +664,8 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           }
 
                           const ffmpeg = await ensureFFmpegLoaded();
-                          const sourceBlob = await getAudioBlobFromUrl(line.audioUrl);
+                          const sourceBlob = await getAudioBlobFromUrl(sourceUrl);
+                          if (!isCurrent()) return null;
                           const sourceExt = getFileExtensionFromBlob(sourceBlob);
                           const inputName = `line_${line.id}_${Date.now()}.${sourceExt}`;
                           const outputName = `line_${line.id}_${Date.now()}_processed.wav`;
@@ -637,9 +686,15 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           });
 
                           const processedBlob = new Blob([processedBytes.buffer.slice(processedBytes.byteOffset, processedBytes.byteOffset + processedBytes.byteLength)], { type: 'audio/wav' });
+                          if (!isCurrent()) return null;
                           const owner = `processed:${cacheKey}`;
                           const processedUrl = objectUrls.create(owner, processedBlob);
                           const processedBuffer = await loadAudioBuffer(processedUrl);
+                          if (!processedBuffer || !isCurrent()) {
+                              audioBufferCache.delete(processedUrl);
+                              objectUrls.release(owner);
+                              return null;
+                          }
                           const asset = {
                               buffer: processedBuffer,
                               blob: processedBlob,
@@ -683,9 +738,12 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       };
                   };
 
-                  const loadAudioBuffer = async (filename) => {
+                  const loadAudioBuffer = (filename, shouldLoad = () => true, queueKey = filename) => {
                       if (!filename) return null;
                       if (audioBufferCache.has(filename)) return audioBufferCache.get(filename);
+                      return queueAudioDecode(queueKey, async () => {
+                      if (!shouldLoad()) return null;
+                      const generation = mediaGeneration;
 
                       try {
                           let arrayBuffer;
@@ -713,21 +771,25 @@ Write the generated narration, dialogue, character names, and image_prompt value
                                   throw new Error(`Audio file not found in memory or local path: ${filename}`);
                               }
                           }
+                          if (!shouldLoad()) return null;
                           const buffer = await audioContext.decodeAudioData(arrayBuffer);
-                          audioBufferCache.set(filename, buffer);
+                          if (generation === mediaGeneration) audioBufferCache.set(filename, buffer);
                           return buffer;
                       } catch (e) {
                           console.warn(`Failed to load audio: ${filename}`, e);
                           return null;
                       }
+                      });
                   };
 
                   // --- 预览播放逻辑 ---
                   const previewPlayingFile = ref(null);
                   let previewSource = null;
                   let releasePreviewBuffer = () => {};
+                  let previewGeneration = 0;
 
                   const playPreview = async (item) => {
+                      const request = ++previewGeneration;
                       if (audioContext.state === 'suspended') await audioContext.resume();
 
                       if (previewSource) {
@@ -765,6 +827,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       if (!filename) return;
 
                       const buffer = await loadAudioBuffer(filename);
+                      if (request !== previewGeneration || isWorkspaceUnmounted) return;
                       if (buffer) {
                           releasePreviewBuffer = decodedCache.pinBuffer(buffer);
                           previewSource = audioContext.createBufferSource();
@@ -782,7 +845,10 @@ Write the generated narration, dialogue, character names, and image_prompt value
 
                           const now = audioContext.currentTime;
 
+                          const source = previewSource;
                           previewSource.onended = () => {
+                              if (previewSource !== source) return;
+                              previewSource = null;
                               releasePreviewBuffer();
                               if (previewPlayingFile.value === filename) {
                                   previewPlayingFile.value = null;
@@ -817,46 +883,127 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       }
                   };
 
-                  const preloadAudioAssets = async () => {
-                      // 移除启动时的自动预加载，因为现在没有持久化的文件列表
-                      // 仅在导入工程后或添加文件时加载
-                  };
-
                   // --- 波形绘制与剪辑逻辑 ---
-                  const drawWaveform = async (canvas, item) => {
-                      const audioPath = item.audioUrl || (item.assetId ? `asset:${item.assetId}` : item.filename || item.refPath);
-                      if (!canvas || !audioPath) return;
-
-                      if (canvas._lastUrl === audioPath) return;
-                      canvas._lastUrl = audioPath;
-
-                      const buffer = await loadAudioBuffer(audioPath);
-                      if (!buffer) {
-                          const ctx = canvas.getContext('2d');
-                          ctx.clearRect(0, 0, canvas.width, canvas.height);
+                  const waveformCanvases = new Map();
+                  const waveformItems = new Map();
+                  let waveformObserver = null;
+                  let nextWaveformCanvasId = 0;
+                  let waveformFallbackListening = false;
+                  const fallbackWaveformVisible = canvas => {
+                      if (!canvas.isConnected || !canvas.getClientRects?.().length) return false;
+                      const rect = canvas.getBoundingClientRect?.();
+                      if (!rect) return true;
+                      const width = window.innerWidth || document.documentElement?.clientWidth || 0;
+                      const height = window.innerHeight || document.documentElement?.clientHeight || 0;
+                      return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0 &&
+                          rect.top < height && rect.left < width;
+                  };
+                  const isWaveformVisible = (canvas, state) =>
+                      (!waveformObserver || state.visible) && fallbackWaveformVisible(canvas);
+                  const unregisterWaveform = canvas => {
+                      const state = waveformCanvases.get(canvas);
+                      if (!state) return;
+                      state.version++;
+                      waveformObserver?.unobserve(canvas);
+                      if (waveformItems.get(state.item) === canvas) waveformItems.delete(state.item);
+                      waveformCanvases.delete(canvas);
+                  };
+                  const renderWaveform = async canvas => {
+                      const state = waveformCanvases.get(canvas);
+                      if (!state || state.loading || state.drawnPath === state.path || !isWaveformVisible(canvas, state)) return;
+                      const path = state.path;
+                      const version = state.version;
+                      state.loading = true;
+                      const stillVisible = () => waveformCanvases.get(canvas) === state &&
+                          state.version === version && state.path === path &&
+                          (state.item.audioAssetId ? `asset:${state.item.audioAssetId}` :
+                              state.item.assetId ? `asset:${state.item.assetId}` :
+                              state.item.audioUrl || state.item.filename || state.item.refPath) === path &&
+                          (state.item.audioAssetId ? scriptLines.value.includes(state.item) :
+                              state.item === sfxForm.value || state.item === bgmForm.value) &&
+                          isWaveformVisible(canvas, state);
+                      const buffer = await loadAudioBuffer(path, stillVisible, `waveform:${state.id}:${path}`);
+                      state.loading = false;
+                      if (!stillVisible()) {
+                          if (waveformCanvases.get(canvas) === state && isWaveformVisible(canvas, state)) void renderWaveform(canvas);
                           return;
                       }
-
                       const ctx = canvas.getContext('2d');
                       const width = canvas.width;
                       const height = canvas.height;
-                      const data = buffer.getChannelData(0);
-                      const step = Math.ceil(data.length / width);
-                      const amp = height / 2;
-
                       ctx.clearRect(0, 0, width, height);
-                      ctx.fillStyle = '#94a3b8'; // slate-400
-                      ctx.beginPath();
-
-                      for (let i = 0; i < width; i++) {
-                          let min = 1.0;
-                          let max = -1.0;
-                          for (let j = 0; j < step; j++) {
-                              const datum = data[(i * step) + j];
-                              if (datum < min) min = datum;
-                              if (datum > max) max = datum;
+                      if (buffer) {
+                          const data = buffer.getChannelData(0);
+                          const step = Math.ceil(data.length / width);
+                          const amp = height / 2;
+                          ctx.fillStyle = '#94a3b8';
+                          for (let i = 0; i < width; i++) {
+                              let min = 1;
+                              let max = -1;
+                              for (let j = 0; j < step; j++) {
+                                  const datum = data[(i * step) + j];
+                                  if (datum < min) min = datum;
+                                  if (datum > max) max = datum;
+                              }
+                              ctx.fillRect(i, (1 + min) * amp, 1, Math.max(1, (max - min) * amp));
                           }
-                          ctx.fillRect(i, (1 + min) * amp, 1, Math.max(1, (max - min) * amp));
+                      }
+                      state.drawnPath = path;
+                  };
+                  const drawWaveform = (canvas, item) => {
+                      if (!canvas) {
+                          const oldCanvas = waveformItems.get(item);
+                          if (oldCanvas) unregisterWaveform(oldCanvas);
+                          return;
+                      }
+                      const path = item.audioAssetId ? `asset:${item.audioAssetId}` :
+                          item.assetId ? `asset:${item.assetId}` : item.audioUrl || item.filename || item.refPath;
+                      if (!path) { unregisterWaveform(canvas); return; }
+                      let state = waveformCanvases.get(canvas);
+                      if (!state) {
+                          const oldCanvas = waveformItems.get(item);
+                          if (oldCanvas) unregisterWaveform(oldCanvas);
+                          state = { id: ++nextWaveformCanvasId, item, path, version: 0, drawnPath: '', loading: false, visible: false };
+                          waveformCanvases.set(canvas, state);
+                          waveformItems.set(item, canvas);
+                          if (!waveformObserver && typeof IntersectionObserver !== 'undefined') {
+                              waveformObserver = new IntersectionObserver(entries => {
+                                  for (const entry of entries) {
+                                      if (!entry.target.isConnected) {
+                                          unregisterWaveform(entry.target);
+                                      } else {
+                                          const observed = waveformCanvases.get(entry.target);
+                                          if (!observed) continue;
+                                          observed.visible = entry.isIntersecting;
+                                          if (observed.visible) void renderWaveform(entry.target);
+                                      }
+                                  }
+                              });
+                          }
+                          waveformObserver?.observe(canvas);
+                          if (!waveformObserver && !waveformFallbackListening) {
+                              window.addEventListener?.('scroll', refreshFallbackWaveforms, true);
+                              window.addEventListener?.('resize', refreshFallbackWaveforms);
+                              waveformFallbackListening = true;
+                          }
+                      }
+                      if (state.item !== item) {
+                          if (waveformItems.get(state.item) === canvas) waveformItems.delete(state.item);
+                          state.item = item;
+                          waveformItems.set(item, canvas);
+                          state.version++;
+                      }
+                      if (state.path !== path) {
+                          state.path = path;
+                          state.version++;
+                          state.drawnPath = '';
+                      }
+                      if (isWaveformVisible(canvas, state)) void renderWaveform(canvas);
+                  };
+                  const refreshFallbackWaveforms = () => {
+                      for (const canvas of waveformCanvases.keys()) {
+                          if (!canvas.isConnected) unregisterWaveform(canvas);
+                          else void renderWaveform(canvas);
                       }
                   };
 
@@ -1033,30 +1180,16 @@ Write the generated narration, dialogue, character names, and image_prompt value
                               }
 
                               // Restore script list (metadata only)
-                              if (projectData.scriptList && Array.isArray(projectData.scriptList)) {
-                                  projectData.scriptList.forEach(script => {
-                                      if (script.data && script.data.scriptLines) {
-                                           script.data.scriptLines = script.data.scriptLines.map(lineData => {
-                                               return { trimStart: 0, trimEnd: 1, ...lineData, imageUrl: '', audioUrl: '', isGenerating: false };
-                                           });
-                                       }
-                                   });
-                                   scriptList.value = projectData.scriptList;
-                                   currentScriptId.value = projectData.currentScriptId || (scriptList.value.length > 0 ? scriptList.value[0].id : 'default');
-                               } else {
-                                   // Compatibility for older format
-                                   scriptList.value = [{
-                                       id: 'default',
-                                       name: translateMessage('data.defaultScriptName', { number: 1 }),
-                                       data: {
-                                           rawScript: projectData.rawScript || '',
-                                           scriptLines: (projectData.scriptLines || []).map(lineData => ({ trimStart: 0, trimEnd: 1, ...lineData, imageUrl: '', audioUrl: '', isGenerating: false })),
-                                           rawAnalysisResult: projectData.rawAnalysisResult || '',
-                                           characters: projectData.characters || []
-                                       }
-                                   }];
-                                   currentScriptId.value = 'default';
-                               }
+                              if (!Array.isArray(projectData.scriptList)) throw new Error('Project script list is missing');
+                              projectData.scriptList.forEach(script => {
+                                  if (script.data && script.data.scriptLines) {
+                                      script.data.scriptLines = script.data.scriptLines.map(lineData => ({
+                                          trimStart: 0, trimEnd: 1, ...lineData, imageUrl: '', audioUrl: '', isGenerating: false
+                                      }));
+                                  }
+                              });
+                              scriptList.value = projectData.scriptList;
+                              currentScriptId.value = projectData.currentScriptId || (scriptList.value.length > 0 ? scriptList.value[0].id : 'default');
 
                                // Load active script into view immediately
                                const active = scriptList.value.find(s => s.id === currentScriptId.value);
@@ -1086,6 +1219,24 @@ Write the generated narration, dialogue, character names, and image_prompt value
                        }
                   });
                   onUnmounted(() => {
+                      isWorkspaceUnmounted = true;
+                      previewGeneration++;
+                      if (previewSource) {
+                          try { previewSource.stop(); } catch { /* already stopped */ }
+                          previewSource = null;
+                          releasePreviewBuffer();
+                      }
+                      waveformObserver?.disconnect();
+                      waveformCanvases.clear();
+                      waveformItems.clear();
+                      if (waveformFallbackListening) {
+                          window.removeEventListener?.('scroll', refreshFallbackWaveforms, true);
+                          window.removeEventListener?.('resize', refreshFallbackWaveforms);
+                      }
+                      mediaGeneration++;
+                      analysisAbortController.value?.abort();
+                      for (const line of scriptLines.value) line.abortController?.abort();
+                      for (const char of characters.value) char.abortController?.abort();
                       objectUrls.releaseAll();
                       audioBufferCache.clear();
                       processedDialogueAssetCache.clear();
@@ -1233,6 +1384,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       if (!currentConfig.value) return alert(translateMessage("请先在“模型配置”中配置 LLM"));
                       if (!rawScript.value.trim()) return alert(translateMessage("请先在右侧输入小说原文"));
 
+                      activeScriptTasks++;
                       char.isAnalyzing = true;
                       const controller = new AbortController();
                       char.abortController = controller;
@@ -1271,6 +1423,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       } finally {
                           char.isAnalyzing = false;
                           delete char.abortController;
+                          activeScriptTasks--;
                       }
                   };
 
@@ -1283,6 +1436,9 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       if (!currentTtsConfig.value) return alert(translateMessage("请先选择 TTS 服务"));
                       if (!char.voiceDescription) return alert(translateMessage("请先填写音色描述"));
 
+                      const taskProjectId = activeProjectId.value;
+                      const taskAssetStore = activeAssetStore;
+                      activeScriptTasks++;
                       char.isGeneratingVoice = true;
                       let pendingVoiceAssetId = null;
                       const startTime = Date.now();
@@ -1330,7 +1486,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           const file = new File([blob], filename, { type: 'audio/wav' });
 
                           // 2. 保存到本地资源管理
-                          const voiceAsset = await activeAssetStore.put(file, { projectId: activeProjectId.value, kind: 'voice' });
+                          const voiceAsset = await taskAssetStore.put(file, { projectId: taskProjectId, kind: 'voice' });
                           pendingVoiceAssetId = voiceAsset.id;
                           pendingAssetIds.add(voiceAsset.id);
                           const servicePath = `unitale_${voiceAsset.id}.wav`;
@@ -1401,21 +1557,42 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           clearTimeout(timeoutId);
                           char.isGeneratingVoice = false;
                           delete char.abortController;
+                          activeScriptTasks--;
                       }
                   };
 
+
+                  const uploadLibraryFile = async (file, kind, formRef, applySaved) => {
+                      if (hasActiveMediaTask()) return alert(translateMessage('storage.busy'));
+                      const store = activeAssetStore;
+                      const projectId = activeProjectId.value;
+                      const form = formRef.value;
+                      activeScriptTasks++;
+                      try {
+                          const saved = await store.put(file, { projectId, kind });
+                          if (isWorkspaceUnmounted || store !== activeAssetStore || projectId !== activeProjectId.value ||
+                              formRef.value !== form) {
+                              await store.remove(saved.id);
+                              return;
+                          }
+                          applySaved(saved, form);
+                          triggerAutoSave();
+                      } finally {
+                          activeScriptTasks--;
+                      }
+                  };
 
                   const handleTimbreFileUpload = async (event) => {
                       const file = event.target.files[0];
                       if (file) {
                           try {
-                              const saved = await activeAssetStore.put(file, { projectId: activeProjectId.value, kind: 'voice' });
-                              timbreForm.value.assetId = saved.id;
-                              const extension = file.name.match(/\.[a-zA-Z0-9]{1,8}$/)?.[0] || '.wav';
-                              timbreForm.value.refPath = `unitale_${saved.id}${extension}`;
-                              timbreForm.value.originalFileName = file.name;
-                              timbreFile.value = file;
-                              triggerAutoSave();
+                              await uploadLibraryFile(file, 'voice', timbreForm, (saved, form) => {
+                                  form.assetId = saved.id;
+                                  const extension = file.name.match(/\.[a-zA-Z0-9]{1,8}$/)?.[0] || '.wav';
+                                  form.refPath = `unitale_${saved.id}${extension}`;
+                                  form.originalFileName = file.name;
+                                  timbreFile.value = file;
+                              });
                           } catch (error) {
                               console.error('Failed to save voice reference:', error);
                               alert(translateMessage('保存音色失败: {0}', { 0: error.message }));
@@ -1425,69 +1602,6 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   };
 
                   // --- 音色库管理逻辑 ---
-                  const syncTimbresWithServer = async () => {
-                      // 尝试获取可用的 TTS 配置
-                      let cfg = currentTtsConfig.value;
-                      if (!cfg && ttsConfigs.value.length > 0) {
-                          // 如果当前未选中，默认使用第一个
-                          currentTtsConfigId.value = ttsConfigs.value[0].id;
-                          cfg = ttsConfigs.value[0];
-                      }
-
-                      if (!cfg) {
-                          console.warn("未找到可用的 TTS 配置，无法同步音色文件。");
-                          return;
-                      }
-
-                      let baseUrl = cfg.baseUrl.trim().replace(/\/+$/, '');
-                      if (baseUrl.endsWith('/v1')) baseUrl = baseUrl.slice(0, -3);
-                      console.log(`正在同步音色文件到服务器: ${baseUrl}`);
-
-                      for (const t of timbres.value) {
-                          if (!t.refPath) continue;
-
-                          // 检查内存中是否有该文件
-                          let file = null;
-                          if (t.assetId) {
-                              const blob = await activeAssetStore.get(t.assetId);
-                              if (blob) file = new File([blob], t.refPath, { type: blob.type });
-                          }
-                          if (!file) {
-                              console.warn(`音色文件未在内存中找到 (可能未导入或丢失): ${t.refPath}`);
-                              continue;
-                          }
-
-                          try {
-                              // 1. 检查服务器是否存在
-                              const checkUrl = `${baseUrl}/v1/check/audio?file_name=${encodeURIComponent(t.refPath)}`;
-                              const checkRes = await requestService(checkUrl);
-                              let exists = false;
-                              if (checkRes.ok) {
-                                  const checkData = await checkRes.json();
-                                  exists = checkData.exists;
-                              }
-
-                              // 2. 如果不存在，则上传
-                              if (!exists) {
-                                  console.log(`正在上传缺失的音色文件: ${t.name} (${t.refPath})`);
-                                  const formData = new FormData();
-                                  formData.append('audio', file);
-                                  formData.append('full_path', t.refPath);
-
-                                  await requestService(`${baseUrl}/v1/upload_audio`, {
-                                      method: 'POST',
-                                      body: formData,
-                                  });
-                              } else {
-                                  console.log(`音色文件已存在: ${t.name}`);
-                              }
-                          } catch (e) {
-                              console.error(`同步音色 ${t.name} 失败:`, e);
-                          }
-                      }
-                      console.log("音色同步完成。");
-                  };
-
                   const saveTimbre = async () => {
                       if (!timbreForm.value.name || !timbreForm.value.refPath) {
                           return alert(translateMessage("请填写音色名称并选择一个参考音频文件"));
@@ -1584,7 +1698,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   };
 
                   const resetSfxForm = () => {
-                      sfxForm.value = { id: '', name: '', description: '', filename: '', trimStart: 0, trimEnd: 1, volume: 0.3 };
+                      sfxForm.value = { id: '', name: '', description: '', filename: '', assetId: '', trimStart: 0, trimEnd: 1, volume: 0.3 };
                       isEditingSfx.value = false;
                   };
 
@@ -1592,13 +1706,13 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       const file = event.target.files[0];
                       if (file) {
                           try {
-                              const saved = await activeAssetStore.put(file, { projectId: activeProjectId.value, kind: 'sfx' });
-                              sfxForm.value.assetId = saved.id;
-                              sfxForm.value.filename = file.name;
-                              sfxForm.value.trimStart = 0;
-                              sfxForm.value.trimEnd = 1;
-                              sfxForm.value.volume = 0.3;
-                              triggerAutoSave();
+                              await uploadLibraryFile(file, 'sfx', sfxForm, (saved, form) => {
+                                  form.assetId = saved.id;
+                                  form.filename = file.name;
+                                  form.trimStart = 0;
+                                  form.trimEnd = 1;
+                                  form.volume = 0.3;
+                              });
                           } catch (error) {
                               console.error('Failed to save sound effect:', error);
                               alert(translateMessage('保存音效失败: {0}', { 0: error.message }));
@@ -1608,10 +1722,6 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   };
 
                   // --- BGM库管理逻辑 ---
-                  const saveBgmToLocal = () => {
-                      localStorage.setItem(storageKeys.bgm, JSON.stringify(bgmLibrary.value));
-                  };
-
                   const saveBgm = async () => {
                       if (!bgmForm.value.name || !bgmForm.value.filename) {
                           return alert(translateMessage("请填写 BGM 名称和文件路径"));
@@ -1625,7 +1735,6 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           } else {
                               bgmLibrary.value.push({ ...bgmForm.value, id: Date.now().toString(), enabled: true });
                           }
-                          // saveBgmToLocal();
                           resetBgmForm();
                       } catch (e) {
                           alert(translateMessage("保存 BGM 失败: {0}", { 0: e.message }));
@@ -1644,7 +1753,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   };
 
                   const resetBgmForm = () => {
-                      bgmForm.value = { id: '', name: '', description: '', filename: '', trimStart: 0, trimEnd: 1, volume: 0.3 };
+                      bgmForm.value = { id: '', name: '', description: '', filename: '', assetId: '', trimStart: 0, trimEnd: 1, volume: 0.3 };
                       isEditingBgm.value = false;
                   };
 
@@ -1652,13 +1761,13 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       const file = event.target.files[0];
                       if (file) {
                           try {
-                              const saved = await activeAssetStore.put(file, { projectId: activeProjectId.value, kind: 'bgm' });
-                              bgmForm.value.assetId = saved.id;
-                              bgmForm.value.filename = file.name;
-                              bgmForm.value.trimStart = 0;
-                              bgmForm.value.trimEnd = 1;
-                              bgmForm.value.volume = 0.3;
-                              triggerAutoSave();
+                              await uploadLibraryFile(file, 'bgm', bgmForm, (saved, form) => {
+                                  form.assetId = saved.id;
+                                  form.filename = file.name;
+                                  form.trimStart = 0;
+                                  form.trimEnd = 1;
+                                  form.volume = 0.3;
+                              });
                           } catch (error) {
                               console.error('Failed to save background music:', error);
                               alert(translateMessage('保存 BGM 失败: {0}', { 0: error.message }));
@@ -1668,10 +1777,6 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   };
 
                   // --- 滤波器库管理逻辑 ---
-                  const saveFiltersToLocal = () => {
-                      localStorage.setItem(storageKeys.filters, JSON.stringify(filterLibrary.value));
-                  };
-
                   const saveFilter = () => {
                       if (!filterForm.value.name) return alert(translateMessage("请填写滤波器名称"));
 
@@ -1687,7 +1792,6 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       } else {
                           filterLibrary.value.push({ ...newFilter, id: Date.now().toString(), enabled: true });
                       }
-                      // saveFiltersToLocal();
                       resetFilterForm();
                   };
 
@@ -1699,7 +1803,6 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   const deleteFilter = (id) => {
                       if (!confirm(translateMessage("确定删除此滤波器？"))) return;
                       filterLibrary.value = filterLibrary.value.filter(f => f.id !== id);
-                      // saveFiltersToLocal();
                   };
 
                   const resetFilterForm = () => {
@@ -1816,6 +1919,10 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           return;
                       }
 
+                      const taskScriptId = currentScriptId.value;
+                      const taskProjectId = activeProjectId.value;
+                      const taskAssetStore = activeAssetStore;
+                      activeScriptTasks++;
                       line.isGenerating = true;
                       const controller = new AbortController();
                       line.abortController = controller;
@@ -1857,7 +1964,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
 
                           let voiceFile = null;
                           if (char.voiceAssetId) {
-                              const voiceBlob = await activeAssetStore.get(char.voiceAssetId);
+                              const voiceBlob = await taskAssetStore.get(char.voiceAssetId);
                               if (voiceBlob) voiceFile = new File([voiceBlob], char.voiceFile, { type: voiceBlob.type });
                           }
                           if (voiceFile) {
@@ -1893,10 +2000,15 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           }
 
                           const blob = await synthRes.blob();
-                          const saved = await activeAssetStore.put(blob, { projectId: activeProjectId.value, kind: 'dialogue' });
+                          const saved = await taskAssetStore.put(blob, { projectId: taskProjectId, kind: 'dialogue' });
+                          if (isWorkspaceUnmounted || !scriptLines.value.includes(line) || taskScriptId !== currentScriptId.value || taskProjectId !== activeProjectId.value) {
+                              await taskAssetStore.remove(saved.id);
+                              return;
+                          }
                           if (line.audioAssetId) collectOrphansAfterSave = true;
+                          releaseLineMedia(taskScriptId, line);
                           line.audioAssetId = saved.id;
-                          const audioUrl = objectUrls.create(mediaOwner(currentScriptId.value, line, 'audioUrl'), blob);
+                          const audioUrl = objectUrls.create(mediaOwner(taskScriptId, line, 'audioUrl'), blob);
                           line.audioUrl = audioUrl;
                           line.trimStart = 0;
                           line.trimEnd = 1;
@@ -1913,6 +2025,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           line.isGenerating = false;
                           delete line.abortController;
                           externalSignal?.removeEventListener('abort', handleExternalAbort);
+                          activeScriptTasks--;
                       }
                   };
 
@@ -1942,13 +2055,13 @@ Write the generated narration, dialogue, character names, and image_prompt value
 
                                       // Pre-flight check on lines that will be processed
 
-                                      const linesToProcess = linesToCheck.filter(l => l.type === 'dialogue' && !l.audioUrl);
+                                      const linesToProcess = linesToCheck.filter(l => l.type === 'dialogue' && !l.audioAssetId);
 
                                       for (const line of linesToProcess) {
 
                                           const char = characters.value.find(c => c.name === line.role);
 
-                                          if (!char || !char.voiceFile) {
+                                          if (!char || (!char.voiceFile && !char.voiceAssetId)) {
 
                                               const lineIndex = scriptLines.value.findIndex(l => l.id === line.id);
 
@@ -2006,7 +2119,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
 
 
 
-                                              if (line.type === 'dialogue' && !line.audioUrl) {
+                                              if (line.type === 'dialogue' && !line.audioAssetId) {
 
                                                   try {
 
@@ -2066,7 +2179,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
 
                                   const clearAllGeneratedAudio = async () => {
 
-                                      const linesWithAudio = scriptLines.value.filter(l => l.audioUrl);
+                                      const linesWithAudio = scriptLines.value.filter(l => l.audioAssetId);
 
                                       if (linesWithAudio.length === 0) {
 
@@ -2124,7 +2237,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                                   return resolve();
                               }
 
-                              if (!line.audioUrl) return resolve(); // Resolve silently if no audio
+                              if (!line.audioAssetId) return resolve(); // Resolve silently if no audio
 
                               isAuditioningId.value = line.id;
 
@@ -2132,8 +2245,8 @@ Write the generated narration, dialogue, character names, and image_prompt value
                               const loadSfx = async () => {
                                   if (!line.sfx || line.sfx.length === 0) return [];
                                   const promises = line.sfx.map(async (sfxItem) => {
-                                      const sfxLibItem = sfxLibrary.value.find(s => s.name === sfxItem.name);
-                                      if (sfxLibItem && sfxLibItem.filename) {
+                                      const sfxLibItem = sfxLibrary.value.find(s => s.id === sfxItem.sfxId);
+                                      if (sfxLibItem && (sfxLibItem.assetId || sfxLibItem.filename)) {
                                           const buf = await loadAudioBuffer(sfxLibItem.assetId ? `asset:${sfxLibItem.assetId}` : sfxLibItem.filename);
                                           if (buf) return {
                                               buffer: buf,
@@ -2197,8 +2310,8 @@ Write the generated narration, dialogue, character names, and image_prompt value
                               dialogueGain.gain.setValueAtTime((line.dialogueVolume ?? 1.0) * charVol, audioContext.currentTime);
 
                               let lastNode = dialogueSource;
-                              if (line.filter) {
-                                  const filterConfig = filterLibrary.value.find(f => f.name === line.filter);
+                              if (line.filterId) {
+                                  const filterConfig = filterLibrary.value.find(f => f.id === line.filterId);
                                   if (filterConfig) {
                                       if (filterConfig.type === 'distortion') {
                                           const waveShaper = audioContext.createWaveShaper();
@@ -2263,14 +2376,11 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   };
 
                   const clearLineAudio = async (line) => {
+                      if (hasActiveMediaTask()) return alert(translateMessage('storage.busy'));
                       if (!line.audioUrl && !line.audioAssetId) return;
 
-                      const audioUrlToDelete = line.audioUrl;
-                      line.audioUrl = '';
+                      releaseLineMedia(currentScriptId.value, line);
                       line.audioAssetId = '';
-                      objectUrls.release(mediaOwner(currentScriptId.value, line, 'audioUrl'));
-                      audioBufferCache.delete(audioUrlToDelete);
-                      processedDialogueAssetCache.deletePrefix(`${currentScriptId.value}|${line.id}|`);
                       collectOrphansAfterSave = true;
                       triggerAutoSave();
                   };
@@ -2287,9 +2397,9 @@ Write the generated narration, dialogue, character names, and image_prompt value
                               emotions: emotionPresets.value }
                       });
                   };
-                  const hasActiveMediaTask = () => isAnalyzingScript.value || isGeneratingAll.value ||
+                  const hasActiveMediaTask = () => isRestoring.value || activeScriptTasks > 0 || isAnalyzingScript.value || isGeneratingAll.value ||
                       isSequencePlaying.value || isExportingAudio.value || isGeneratingVideo.value ||
-                      characters.value.some(char => char.isGeneratingVoice) || scriptLines.value.some(line => line.isGenerating);
+                      isExportingProject.value || characters.value.some(char => char.isGeneratingVoice) || scriptLines.value.some(line => line.isGenerating);
                   const protectedAssetIds = () => new Set([
                       ...pendingAssetIds,
                       timbreForm.value.assetId,
@@ -2370,7 +2480,20 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   };
 
                   const applyProjectSnapshot = async snapshot => {
+                      previewGeneration++;
                       for (const script of scriptList.value) releaseScriptMedia(script);
+                      resetTimbreForm();
+                      resetSfxForm();
+                      resetBgmForm();
+                      resetFilterForm();
+                      selectedTimbreId.value = '';
+                      selectedLineIndex.value = -1;
+                      if (previewSource) {
+                          try { previewSource.stop(); } catch { /* already stopped */ }
+                          previewSource = null;
+                          releasePreviewBuffer();
+                      }
+                      previewPlayingFile.value = null;
                       scriptList.value = snapshot.scriptList;
                       currentScriptId.value = snapshot.currentScriptId;
                       sfxLibrary.value = snapshot.libraries.sfx;
@@ -2503,7 +2626,18 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           directoryError.value = '';
                           storageAccessBlocked = false;
                           await applyProjectSnapshot(snapshot);
+                          let cleanupFailed = false;
+                          if (oldWorkspace.backend === 'indexeddb' && oldWorkspace.id !== projectId) {
+                              try {
+                                  await removeWorkspaceProject(oldWorkspace.id);
+                              } catch (cleanupError) {
+                                  cleanupFailed = true;
+                                  lastStorageError.value = cleanupError.message || String(cleanupError);
+                                  console.warn('Old project cleanup failed after successful import', cleanupError);
+                              }
+                          }
                           alert(translateMessage('完整工程导入成功！所有资源和设置已恢复。'));
+                          if (cleanupFailed) alert(`旧工程清理失败：${lastStorageError.value}`);
                       } catch (error) {
                           console.error('Project archive import failed', error);
                           if (activeProjectId.value !== oldWorkspace.id) {
@@ -2528,19 +2662,45 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   const handleImportTxt = (event) => {
                       const file = event.target.files[0];
                       if (!file) return;
+                      if (hasActiveMediaTask()) return alert(translateMessage('storage.busy'));
+                      activeScriptTasks++;
                       const reader = new FileReader();
                       reader.onload = (e) => {
                           rawScript.value = e.target.result;
+                          activeScriptTasks--;
                       };
+                      reader.onerror = reader.onabort = () => { activeScriptTasks--; };
                       reader.readAsText(file);
                       event.target.value = '';
+                  };
+
+                  const collectSfxEvents = async dialogueEvents => {
+                      const effects = [];
+                      for (const evt of dialogueEvents) {
+                          for (const effect of evt.line.sfx || []) {
+                              const item = sfxLibrary.value.find(value => value.id === effect.sfxId);
+                              const path = item?.assetId ? `asset:${item.assetId}` : item?.filename;
+                              if (!path) continue;
+                              const sound = await loadAudioBuffer(path);
+                              if (!sound) continue;
+                              const trimStart = Math.max(0, Math.min(1, Number(item.trimStart ?? 0)));
+                              const trimEnd = Math.max(trimStart, Math.min(1, Number(item.trimEnd ?? 1)));
+                              const position = Math.max(0, Math.min(1, Number(effect.position) || 0));
+                              const start = evt.time + evt.duration * position;
+                              const duration = sound.duration * (trimEnd - trimStart);
+                              if (duration <= 0) continue;
+                              effects.push({ start, end: start + duration, sourceOffset: sound.duration * trimStart,
+                                  path, volume: (evt.line.sfxVolume ?? 0.5) * (item.volume ?? 1) });
+                          }
+                      }
+                      return effects;
                   };
 
                   // --- Bounded WAV export: render at most two minutes at a time ---
                   const exportAudio = async () => {
                       const dialogueLines = scriptLines.value.filter(line => line.type === 'dialogue');
                       if (!dialogueLines.length) return alert(translateMessage('脚本为空'));
-                      if (dialogueLines.some(line => !line.audioUrl) &&
+                      if (dialogueLines.some(line => !line.audioAssetId) &&
                           !confirm(translateMessage('部分台词尚未生成音频，导出时将被跳过。确定继续吗？'))) return;
 
                       let writable = null;
@@ -2566,13 +2726,13 @@ Write the generated narration, dialogue, character names, and image_prompt value
                               if (line.type === 'bgm') {
                                   if (line.action === 'play') {
                                       if (currentBgm) bgmSegments.push({ ...currentBgm, end: currentTime });
-                                      currentBgm = { name: line.bgmName, start: currentTime, volume: line.volume };
+                                      currentBgm = { id: line.bgmId, start: currentTime, volume: line.volume };
                                   } else if (line.action === 'stop' && currentBgm) {
                                       bgmSegments.push({ ...currentBgm, end: currentTime });
                                       currentBgm = null;
                                   }
                               } else if (line.type === 'dialogue') {
-                                  if (line.audioUrl) {
+                                  if (line.audioAssetId) {
                                       const timing = await getDialogueTimingInfo(line);
                                       if (timing) {
                                           currentTime += 0.05;
@@ -2583,7 +2743,8 @@ Write the generated narration, dialogue, character names, and image_prompt value
                                   currentTime += Number(line.break_duration) || 0;
                               }
                           }
-                          const totalDuration = currentTime + EXPORT_TAIL_PADDING_SEC;
+                          const sfxEvents = await collectSfxEvents(events);
+                          const totalDuration = totalTimelineDuration(currentTime, sfxEvents, EXPORT_TAIL_PADDING_SEC);
                           if (currentBgm) bgmSegments.push({ ...currentBgm, end: totalDuration });
                           const sampleRate = 44100;
                           const totalFrames = Math.ceil(totalDuration * sampleRate);
@@ -2601,8 +2762,8 @@ Write the generated narration, dialogue, character names, and image_prompt value
                               const ctx = new OfflineAudioContext(2, frameCount, sampleRate);
                               const scheduleFilter = (source, line, gain) => {
                                   let last = source;
-                                  if (line.filter) {
-                                      const setting = filterLibrary.value.find(item => item.name === line.filter);
+                                  if (line.filterId) {
+                                      const setting = filterLibrary.value.find(item => item.id === line.filterId);
                                       if (setting) {
                                           if (setting.type === 'distortion') {
                                               const node = ctx.createWaveShaper();
@@ -2624,8 +2785,8 @@ Write the generated narration, dialogue, character names, and image_prompt value
                               };
                               for (const seg of bgmSegments) {
                                   if (seg.end <= start || seg.start >= end) continue;
-                                  const item = bgmLibrary.value.find(value => value.name === seg.name);
-                                  if (!item?.filename) continue;
+                                  const item = bgmLibrary.value.find(value => value.id === seg.id);
+                                  if (!item?.assetId && !item?.filename) continue;
                                   const buffer = await loadAudioBuffer(item.assetId ? `asset:${item.assetId}` : item.filename);
                                   if (!buffer) continue;
                                   const overlapStart = Math.max(start, seg.start);
@@ -2649,37 +2810,29 @@ Write the generated narration, dialogue, character names, and image_prompt value
                                   src.stop(overlapEnd - start);
                               }
                               for (const evt of events) {
-                                  if (evt.time + evt.duration <= start || evt.time >= end) continue;
+                                  const clip = clipAudioEvent({ start: evt.time, end: evt.time + evt.duration }, start, end);
+                                  if (!clip) continue;
                                   const buffer = await getProcessedDialogueBuffer(evt.line);
                                   if (!buffer) continue;
-                                  const overlapStart = Math.max(start, evt.time);
-                                  const overlapEnd = Math.min(end, evt.time + evt.duration);
                                   const src = ctx.createBufferSource();
                                   src.buffer = buffer;
                                   const gain = ctx.createGain();
                                   const character = characters.value.find(value => value.name === evt.line.role);
                                   gain.gain.value = (evt.line.dialogueVolume ?? 1) * (character?.volume ?? 1);
                                   scheduleFilter(src, evt.line, gain);
-                                  src.start(overlapStart - start, overlapStart - evt.time, overlapEnd - overlapStart);
-                                  for (const effect of evt.line.sfx || []) {
-                                      const position = Math.max(0, Math.min(1, Number(effect.position) || 0));
-                                      const effectStart = evt.time + evt.duration * position;
-                                      const item = sfxLibrary.value.find(value => value.name === effect.name);
-                                      if (!item?.filename) continue;
-                                      const sound = await loadAudioBuffer(item.assetId ? `asset:${item.assetId}` : item.filename);
-                                      if (!sound) continue;
-                                      const offset = sound.duration * (item.trimStart ?? 0);
-                                      const effectEnd = effectStart + sound.duration * ((item.trimEnd ?? 1) - (item.trimStart ?? 0));
-                                      const playStart = Math.max(start, effectStart);
-                                      const playEnd = Math.min(end, effectEnd);
-                                      if (playEnd <= playStart) continue;
-                                      const sfxSource = ctx.createBufferSource();
-                                      sfxSource.buffer = sound;
-                                      const sfxGain = ctx.createGain();
-                                      sfxGain.gain.value = (evt.line.sfxVolume ?? 0.5) * (item.volume ?? 1);
-                                      sfxSource.connect(sfxGain).connect(ctx.destination);
-                                      sfxSource.start(playStart - start, offset + playStart - effectStart, playEnd - playStart);
-                                  }
+                                  src.start(clip.start - start, clip.offset, clip.duration);
+                              }
+                              for (const effect of sfxEvents) {
+                                  const clip = clipAudioEvent(effect, start, end);
+                                  if (!clip) continue;
+                                  const sound = await loadAudioBuffer(effect.path);
+                                  if (!sound) continue;
+                                  const sfxSource = ctx.createBufferSource();
+                                  sfxSource.buffer = sound;
+                                  const sfxGain = ctx.createGain();
+                                  sfxGain.gain.value = effect.volume;
+                                  sfxSource.connect(sfxGain).connect(ctx.destination);
+                                  sfxSource.start(clip.start - start, clip.offset, clip.duration);
                               }
                               return bufferToWave(await ctx.startRendering(), frameCount);
                           };
@@ -2708,22 +2861,21 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       const dialogueLines = scriptLines.value.filter(l => l.type === 'dialogue');
                       if (dialogueLines.length === 0) return alert(translateMessage("脚本为空"));
 
-                      if (dialogueLines.some(l => !l.audioUrl)) {
+                      if (dialogueLines.some(l => !l.audioAssetId)) {
                           if (!confirm(translateMessage("部分台词尚未生成音频，导出字幕时时间轴可能不准确（将跳过未生成音频的行）。确定继续吗？"))) return;
                       }
 
                       isExportingAudio.value = true; // 复用 loading 状态
 
                       try {
-                          // 1. 加载所有台词音频以获取时长
+                          // Keep only scalar durations so processed buffers can be evicted during long exports.
                           const audioMap = new Map();
-                          const loadPromises = dialogueLines.map(async (line) => {
-                              if (line.audioUrl) {
+                          for (const line of dialogueLines) {
+                              if (line.audioAssetId) {
                                   const timingInfo = await getDialogueTimingInfo(line);
-                                  if (timingInfo) audioMap.set(line.id, timingInfo);
+                                  if (timingInfo) audioMap.set(line.id, timingInfo.effectiveDuration);
                               }
-                          });
-                          await Promise.all(loadPromises);
+                          }
 
                           let srtContent = '';
                           let currentTime = 0;
@@ -2795,9 +2947,8 @@ Write the generated narration, dialogue, character names, and image_prompt value
 
                           for (const line of scriptLines.value) {
                               if (line.type === 'dialogue') {
-                                  const timingInfo = audioMap.get(line.id);
-                                  if (timingInfo) {
-                                      const totalDuration = timingInfo.effectiveDuration;
+                                  const totalDuration = audioMap.get(line.id);
+                                  if (totalDuration) {
 
                                       const startTime = currentTime + 0.05; // 对应 exportAudio 的 0.05s 偏移
 
@@ -2892,6 +3043,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
 
                   // --- 脚本制作逻辑 ---
                   const splitScript = () => {
+                      if (hasActiveMediaTask()) return alert(translateMessage('storage.busy'));
                       if (!rawScript.value.trim()) return alert(translateMessage("请输入原文内容"));
 
                       let text = rawScript.value.replace(/\r\n/g, '\n');
@@ -2902,13 +3054,14 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           .filter(l => l.length > 0);
 
                       collectOrphansAfterSave = true;
+                      for (const line of scriptLines.value) releaseLineMedia(currentScriptId.value, line);
                       scriptLines.value = lines.map(text => ({
                           id: Date.now().toString() + '_' + Math.random().toString(36).substr(2, 9),
                           type: 'dialogue',
                           role: '旁白',
                           emotion: '平静',
                           intensity: '中等',
-                          filter: '',
+                          filterId: '',
                           text: text,
                           trimStart: 0,
                           trimEnd: 1,
@@ -2926,7 +3079,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           type: 'bgm',
                           action: 'play',
                           volume: 1.0,
-                          bgmName: bgmLibrary.value.length > 0 ? bgmLibrary.value[0].name : ''
+                          bgmId: bgmLibrary.value.length > 0 ? bgmLibrary.value[0].id : ''
                       };
                       if (selectedLineIndex.value !== -1 && selectedLineIndex.value < scriptLines.value.length) {
                           scriptLines.value.splice(selectedLineIndex.value + 1, 0, newBlock);
@@ -2943,8 +3096,6 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           id: newId,
                           type: 'bgImage',
                           bgImagePrompt: '',
-                          // selected background will be saved into assets store and restored via bgImageAssetKey
-                          bgImageAssetKey: '',
                           imageUrl: ''
                       };
                       if (selectedLineIndex.value !== -1 && selectedLineIndex.value < scriptLines.value.length) {
@@ -2963,7 +3114,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           role: '旁白',
                           emotion: '平静',
                           intensity: '中等',
-                          filter: '',
+                          filterId: '',
                           text: '',
                           trimStart: 0,
                           trimEnd: 1,
@@ -2985,7 +3136,11 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   };
 
                   const removeScriptLine = (index) => {
-                      if (scriptLines.value[index]?.audioAssetId || scriptLines.value[index]?.bgImageAssetId) collectOrphansAfterSave = true;
+                      if (hasActiveMediaTask()) return alert(translateMessage('storage.busy'));
+                      const line = scriptLines.value[index];
+                      if (!line) return;
+                      if (line.audioAssetId || line.bgImageAssetId) collectOrphansAfterSave = true;
+                      releaseLineMedia(currentScriptId.value, line);
                       scriptLines.value.splice(index, 1);
                       if (selectedLineIndex.value === index) {
                           selectedLineIndex.value = -1;
@@ -3000,6 +3155,10 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   };
 
                   const handleBgImageFileChange = async (event) => {
+                      if (hasActiveMediaTask()) {
+                          event.target.value = '';
+                          return alert(translateMessage('storage.busy'));
+                      }
                       const file = event.target.files && event.target.files[0];
                       const lineIndex = pendingBgImageLineIndex.value;
                       pendingBgImageLineIndex.value = -1;
@@ -3009,15 +3168,25 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       const line = scriptLines.value[lineIndex];
                       if (!line || line.type !== 'bgImage') return;
 
+                      const taskScriptId = currentScriptId.value;
+                      const taskProjectId = activeProjectId.value;
+                      const taskAssetStore = activeAssetStore;
+                      activeScriptTasks++;
                       try {
-                          const saved = await activeAssetStore.put(file, { projectId: activeProjectId.value, kind: 'backgroundImage' });
+                          const saved = await taskAssetStore.put(file, { projectId: taskProjectId, kind: 'backgroundImage' });
+                          if (!scriptLines.value.includes(line) || taskScriptId !== currentScriptId.value || taskProjectId !== activeProjectId.value) {
+                              await taskAssetStore.remove(saved.id);
+                              return;
+                          }
                           if (line.bgImageAssetId) collectOrphansAfterSave = true;
-                          objectUrls.release(mediaOwner(currentScriptId.value, line, 'imageUrl'));
+                          releaseLineMedia(taskScriptId, line);
                           line.bgImageAssetId = saved.id;
-                          line.imageUrl = objectUrls.create(mediaOwner(currentScriptId.value, line, 'imageUrl'), file);
+                          line.imageUrl = objectUrls.create(mediaOwner(taskScriptId, line, 'imageUrl'), file);
                       } catch (e) {
                           console.error('Failed to save bgImage asset:', e);
                           alert(translateMessage("保存背景图片失败，请重试。"));
+                      } finally {
+                          activeScriptTasks--;
                       }
 
                       triggerAutoSave();
@@ -3051,8 +3220,8 @@ Write the generated narration, dialogue, character names, and image_prompt value
 
                   const addLineSfx = (line) => {
                       if (!line.sfx) line.sfx = [];
-                      const defaultSfx = sfxLibrary.value.length > 0 ? sfxLibrary.value[0].name : 'New SFX';
-                      line.sfx.push({ name: defaultSfx, position: 0.5 });
+                      const defaultSfx = sfxLibrary.value.length > 0 ? sfxLibrary.value[0].id : '';
+                      line.sfx.push({ sfxId: defaultSfx, position: 0.5 });
                   };
 
                   const removeLineSfx = (line, index) => {
@@ -3087,7 +3256,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       }
                   };
 
-                  const playBgm = async (bgmName, volume = 0.4) => {
+                  const playBgm = async (bgmId, volume = 0.4) => {
                       // Stop any existing BGM
                       if (bgmAudioNode && bgmGainNode) {
                           const oldNode = bgmAudioNode;
@@ -3107,9 +3276,9 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           bgmGainNode = null;
                       }
 
-                      const bgmLibItem = bgmLibrary.value.find(b => b.name === bgmName);
-                      if (!bgmLibItem || !bgmLibItem.filename) {
-                          console.warn(`BGM not found in library: ${bgmName}`);
+                      const bgmLibItem = bgmLibrary.value.find(b => b.id === bgmId);
+                      if (!bgmLibItem || (!bgmLibItem.assetId && !bgmLibItem.filename)) {
+                          console.warn(`BGM not found in library: ${bgmId}`);
                           return;
                       }
 
@@ -3180,7 +3349,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           // If the last directive was to play a BGM, play it now.
                           // If it was 'stop' or null, we do nothing, as stopScriptSequentially() already handled it.
                           if (lastBgmLine && lastBgmLine.action === 'play') {
-                              await playBgm(lastBgmLine.bgmName, lastBgmLine.volume);
+                              await playBgm(lastBgmLine.bgmId, lastBgmLine.volume);
                           }
                       }
                       // --- End BGM Pre-scan ---
@@ -3214,7 +3383,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
 
                           if (line.type === 'bgm') {
                               if (line.action === 'play') {
-                                  await playBgm(line.bgmName, line.volume);
+                                  await playBgm(line.bgmId, line.volume);
                               } else if (line.action === 'stop') {
                                   if (bgmAudioNode && bgmGainNode) {
                                       const oldNode = bgmAudioNode;
@@ -3231,7 +3400,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           } else if (line.type === 'bgImage') {
                               setStageBgUrlWithFade(line.imageUrl || '');
                           } else { // 'dialogue'
-                              if (!line.audioUrl) {
+                              if (!line.audioAssetId) {
                                   // 跳过未生成的台词
                                   continue;
                               }
@@ -3256,7 +3425,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   const generateVideo = async () => {
                       const dialogueLines = scriptLines.value.filter(line => line.type === 'dialogue');
                       if (!dialogueLines.length) return alert(translateMessage('脚本为空'));
-                      if (dialogueLines.some(line => !line.audioUrl) &&
+                      if (dialogueLines.some(line => !line.audioAssetId) &&
                           !confirm(translateMessage('部分台词尚未生成音频，导出视频时将跳过未生成的台词。确定继续吗？'))) return;
                       if (typeof VideoEncoder === 'undefined') {
                           return alert(translateMessage('当前浏览器不支持 WebCodecs API，无法快速导出视频。请使用最新版 Chrome 或 Edge。'));
@@ -3268,7 +3437,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       try {
                           const durations = new Map();
                           for (const line of dialogueLines) {
-                              if (!line.audioUrl) continue;
+                              if (!line.audioAssetId) continue;
                               const timing = await getDialogueTimingInfo(line);
                               if (timing) durations.set(line.id, timing.effectiveDuration);
                           }
@@ -3276,6 +3445,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           let background = '';
                           let backgroundStart = 0;
                           const visuals = [];
+                          const dialogueEvents = [];
                           const first = scriptLines.value.find(line => line.type === 'bgImage' && line.imageUrl);
                           if (first) background = first.imageUrl;
                           for (const line of scriptLines.value) {
@@ -3285,11 +3455,16 @@ Write the generated narration, dialogue, character names, and image_prompt value
                                   backgroundStart = time;
                               } else if (line.type === 'dialogue') {
                                   const duration = durations.get(line.id);
-                                  if (duration) time += 0.05 + duration;
+                                  if (duration) {
+                                      time += 0.05;
+                                      dialogueEvents.push({ line, time, duration });
+                                      time += duration;
+                                  }
                                   time += Number(line.break_duration) || 0;
                               }
                           }
-                          const totalDuration = time + EXPORT_TAIL_PADDING_SEC;
+                          const sfxEvents = await collectSfxEvents(dialogueEvents);
+                          const totalDuration = totalTimelineDuration(time, sfxEvents, EXPORT_TAIL_PADDING_SEC);
                           visuals.push({ url: background, start: backgroundStart, end: totalDuration });
                           const fps = 4;
                           const totalFrames = Math.ceil(totalDuration * fps);
@@ -3393,11 +3568,13 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           isAnalyzingScript.value = false;
                           return;
                       }
+                      if (hasActiveMediaTask()) return alert(translateMessage('storage.busy'));
 
                       if (!currentConfig.value) return alert(translateMessage("请先在“模型配置”选择一个 LLM 模型配置"));
                       if (!rawScript.value.trim()) return alert(translateMessage("请输入原文内容"));
 
                       const requestedBgImageCount = Math.max(0, Number(bgImageCount.value) || 0);
+                      activeScriptTasks++;
                       isAnalyzingScript.value = true;
                       analysisAbortController.value = new AbortController();
 
@@ -3552,49 +3729,16 @@ Write the generated narration, dialogue, character names, and image_prompt value
                               characters.value = newCharacterList;
 
                               collectOrphansAfterSave = true;
+                              for (const line of scriptLines.value) releaseLineMedia(currentScriptId.value, line);
                               scriptLines.value = validParsed.map(item => {
-                                  // 通用模糊匹配函数
-                                  const findBestMatch = (target, library) => {
-                                      if (!target) return '';
-                                      const t = target.trim().toLowerCase();
-                                      // 1. 精确匹配
-                                      const exact = library.find(i => i.name.toLowerCase() === t);
-                                      if (exact) return exact.name;
-
-                                      // 2. 模糊匹配 (包含关系)
-                                      const candidates = library.filter(i => {
-                                          const n = i.name.toLowerCase();
-                                          return n.includes(t) || t.includes(n);
-                                      });
-
-                                      if (candidates.length > 0) {
-                                          // 按长度差排序，找最接近的
-                                          candidates.sort((a, b) => Math.abs(a.name.length - target.length) - Math.abs(b.name.length - target.length));
-                                          return candidates[0].name;
-                                      }
-                                      return '';
-                                  };
-
-                                  // 1. 匹配滤波器
-                                  let matchedFilter = '';
-                                  if (item.filter) {
-                                      matchedFilter = findBestMatch(item.filter, filterLibrary.value);
-                                  }
-
-                                  // 2. 匹配音效
-                                  let matchedSfx = [];
-                                  if (item.sfx && Array.isArray(item.sfx)) {
-                                      matchedSfx = item.sfx.map(s => ({
-                                          name: findBestMatch(s.name, sfxLibrary.value) || s.name,
-                                          position: s.position
-                                      }));
-                                  }
-
-                                  // 3. 匹配 BGM
-                                  let matchedBgmName = '';
+                                  const filterId = matchLibraryId(item.filter, filterLibrary.value);
+                                  const matchedSfx = Array.isArray(item.sfx) ? item.sfx
+                                      .map(s => ({ sfxId: matchLibraryId(s.name, sfxLibrary.value), position: s.position }))
+                                      .filter(s => s.sfxId) : [];
+                                  let bgmId = '';
                                   if (item.type === 'bgm' && item.action === 'play') {
                                       const rawName = item.name || item.bgmName || '';
-                                      matchedBgmName = findBestMatch(rawName, bgmLibrary.value) || rawName;
+                                      bgmId = matchLibraryId(rawName, bgmLibrary.value);
                                   }
 
                                   return {
@@ -3605,7 +3749,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                                       text: item.text_content || item.text || item.content || '',
                                       emotion: item.emotion || '平静',
                                       intensity: item.intensity || '中等',
-                                      filter: matchedFilter,
+                                      filterId,
                                       sfx: matchedSfx,
                                       break_duration: typeof item.break_duration === 'number' ? item.break_duration : 0,
                                       trimStart: 0,
@@ -3617,11 +3761,10 @@ Write the generated narration, dialogue, character names, and image_prompt value
                                       // BGM fields
                                       action: item.action || 'play',
                                       volume: 1.0,
-                                      bgmName: matchedBgmName,
+                                      bgmId,
 
                                       // bgImage fields (background-image block)
                                       bgImagePrompt: item.image_prompt || item.bgImagePrompt || item.imagePrompt || item.prompt || '',
-                                      bgImageAssetKey: '',
                                       imageUrl: ''
                                   };
                               });
@@ -3638,6 +3781,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       } finally {
                           isAnalyzingScript.value = false;
                           analysisAbortController.value = null;
+                          activeScriptTasks--;
                       }
                   };
 

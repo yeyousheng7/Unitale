@@ -11,10 +11,10 @@ export default defineComponent({
       .map((line, index) => ({
         line,
         index,
-        missingVoice: !workspace.characters.value.some(char => char.name === line.role && char.voiceFile),
+        missingVoice: !workspace.characters.value.some(char => char.name === line.role && (char.voiceAssetId || char.voiceFile)),
       }))
       .filter(entry => entry.line.type === 'dialogue'))
-    const pendingRows = computed(() => dialogueRows.value.filter(entry => !entry.line.audioUrl))
+    const pendingRows = computed(() => dialogueRows.value.filter(entry => !entry.line.audioAssetId))
     const generatedCount = computed(() => dialogueRows.value.length - pendingRows.value.length)
     const missingVoiceCount = computed(() => pendingRows.value.filter(entry => entry.missingVoice).length)
 

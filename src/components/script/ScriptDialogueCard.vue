@@ -27,7 +27,7 @@ export default defineComponent({
 
     <div class="dialogue-main">
       <div class="dialogue-card-actions">
-        <span v-if="line.audioUrl" class="line-audio-status is-ready">{{ $t("已生成") }}</span>
+        <span v-if="line.audioAssetId" class="line-audio-status is-ready">{{ $t("已生成") }}</span>
         <span v-else class="line-audio-status">{{ $t("待生成") }}</span>
         <button @click.stop="generateLineAudio(line)" class="dialogue-icon-button"
           :class="line.isGenerating ? 'is-generating' : ''"
@@ -58,9 +58,9 @@ export default defineComponent({
         </label>
         <label class="dialogue-field">
           <span>{{ $t("滤波器") }}</span>
-          <select v-model="line.filter">
+          <select v-model="line.filterId">
             <option value="">{{ $t("无滤波器") }}</option>
-            <option v-for="f in filterLibrary" :key="f.id" :value="f.name">{{ $displayBuiltIn(f.name) }}</option>
+            <option v-for="f in filterLibrary" :key="f.id" :value="f.id">{{ $displayBuiltIn(f.name) }}</option>
           </select>
         </label>
         <label class="dialogue-field">
@@ -86,8 +86,8 @@ export default defineComponent({
         </label>
         <div class="dialogue-sfx">
           <div v-for="(sfx, sIdx) in line.sfx" :key="sIdx" class="dialogue-sfx-chip">
-            <select v-model="sfx.name" :aria-label='$t("音效名称")'>
-              <option v-for="libSfx in sfxLibrary" :key="libSfx.id" :value="libSfx.name">{{ libSfx.name }}</option>
+            <select v-model="sfx.sfxId" :aria-label='$t("音效名称")'>
+              <option v-for="libSfx in sfxLibrary" :key="libSfx.id" :value="libSfx.id">{{ libSfx.name }}</option>
             </select>
             <span aria-hidden="true">@</span>
             <input type="number" v-model="sfx.position" step="0.1" min="0" max="1"
@@ -101,7 +101,7 @@ export default defineComponent({
         </div>
       </div>
 
-      <div v-if="line.audioUrl" class="dialogue-audio-panel">
+      <div v-if="line.audioAssetId" class="dialogue-audio-panel">
         <div class="dialogue-range-grid">
           <label class="dialogue-range-field">
             <span><b>{{ $t("台词音量") }}</b><output>{{ Math.round((line.dialogueVolume ?? 1) * 100) }}%</output></span>
@@ -119,7 +119,7 @@ export default defineComponent({
 
         <div class="dialogue-waveform">
           <div class="dialogue-waveform-heading"><span>{{ $t("音频剪辑") }}</span><span>{{ Math.round(((line.trimEnd || 1) - (line.trimStart || 0)) * 100) }}%</span></div>
-          <div :key="line.audioUrl" class="dialogue-waveform-track select-none group/wave">
+          <div :key="line.audioAssetId" class="dialogue-waveform-track select-none group/wave">
             <canvas :ref="(el) => drawWaveform(el, line)" width="192" height="32" class="w-full h-full block opacity-60"></canvas>
             <div class="absolute inset-0 pointer-events-none">
               <div class="absolute top-0 bottom-0 left-0 bg-slate-500/30 border-r border-blue-500"

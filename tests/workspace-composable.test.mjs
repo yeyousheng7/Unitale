@@ -1,0 +1,197 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import 'fake-indexeddb/auto'
+import { createRenderer, defineComponent, h, nextTick } from 'vue'
+import { createI18n, i18nKey } from '../src/i18n/index.ts'
+import { useUnitaleWorkspace } from '../src/composables/useUnitaleWorkspace.js'
+import { exportArchiveParts } from '../src/services/project/archive.ts'
+import { indexedDbAssetStore, loadWorkspaceProject, saveWorkspaceProject, setActiveProjectId, getActiveProjectId, openWorkspaceDB } from '../src/services/storage/workspaceDb.ts'
+
+const values = new Map()
+globalThis.localStorage = {
+  getItem: key => values.get(key) ?? null,
+  setItem: (key, value) => values.set(key, String(value)),
+  removeItem: key => values.delete(key),
+}
+globalThis.document = { documentElement: { lang: 'zh-CN' }, title: '' }
+globalThis.window = { AudioContext: class { destination = {}; decodeAudioData = async () => ({ length: 1, sampleRate: 1, duration: 1 }) } }
+Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { storage: { estimate: async () => ({ usage: 0, quota: 1e9 }) } } })
+globalThis.alert = () => {}
+globalThis.confirm = () => true
+const revoked = []
+let nextUrl = 0
+URL.createObjectURL = () => `blob:workspace-test-${++nextUrl}`
+URL.revokeObjectURL = url => revoked.push(url)
+const renderer = createRenderer({
+  createElement: name => ({ name, children: [] }), createText: text => ({ text }), createComment: text => ({ text }),
+  setText: (node, text) => { node.text = text }, setElementText: (node, text) => { node.text = text },
+  patchProp: () => {}, insert: (child, parent) => { parent.children.push(child) }, remove: () => {},
+  parentNode: () => null, nextSibling: () => null,
+})
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+const within = (promise, label) => Promise.race([
+  promise,
+  sleep(2500).then(() => { throw new Error(`${label} did not start`) }),
+])
+function deferred() {
+  let resolve
+  const promise = new Promise(done => { resolve = done })
+  return { promise, resolve }
+}
+function mountWorkspace() {
+  let workspace
+  const app = renderer.createApp(defineComponent({
+    setup() {
+      workspace = useUnitaleWorkspace()
+      return () => h('main')
+    },
+  }))
+  app.provide(i18nKey, createI18n('zh-CN'))
+  app.mount({ children: [] })
+  return { workspace, unmount: () => app.unmount() }
+}
+function snapshot(id, assetId = '') {
+  return { characters: [], currentScriptId: 'default', timestamp: Date.now(),
+    libraries: { sfx: [], bgm: [], timbres: [], filters: [], emotions: [] },
+    scriptList: [{ id: 'default', name: 'Old', data: { rawScript: '', rawAnalysisResult: '', characters: [],
+      scriptLines: assetId ? [{ id: 'old-line', type: 'dialogue', audioAssetId: assetId }] : [] } }], }
+}
+
+test('workspace saves inactive rename, protects TTS ownership, releases deleted media, and cleans replaced projects', async () => {
+  const oldId = `composable-old-${Date.now()}`
+  const oldAsset = await indexedDbAssetStore.put(new Blob(['old audio'], { type: 'audio/wav' }), { projectId: oldId, kind: 'dialogue' })
+  await saveWorkspaceProject(snapshot(oldId, oldAsset.id), undefined, oldId)
+  await setActiveProjectId(oldId)
+  const { workspace: w, unmount } = mountWorkspace()
+  try {
+    await sleep(550)
+    w.addScript()
+    const secondId = w.currentScriptId.value
+    w.scriptList.value.find(s => s.id === 'default').name = 'Renamed inactive'
+    w.startEditingScript('default')
+    w.stopEditingScript()
+    await sleep(1150)
+    assert.equal((await loadWorkspaceProject(oldId)).scriptList.find(s => s.id === 'default').name, 'Renamed inactive')
+
+    w.ttsConfigs.value = [{ id: 'tts', baseUrl: 'https://example.test' }]
+    w.currentTtsConfigId.value = 'tts'
+    w.characters.value = [{ id: 'speaker', name: 'Speaker', voiceFile: 'remote.wav' }]
+    const line = { id: 'generated', type: 'dialogue', role: 'Speaker', text: 'Hello', audioUrl: '' }
+    w.scriptLines.value.push(line)
+    let answer
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = () => new Promise(resolve => { answer = resolve })
+    try {
+      const generating = w.generateLineAudio(line)
+      await nextTick()
+      assert.equal(typeof answer, 'function')
+      w.switchScript('default')
+      assert.equal(w.currentScriptId.value, secondId)
+      w.addScript()
+      assert.equal(w.currentScriptId.value, secondId)
+      answer(new Response(new Blob(['new audio'], { type: 'audio/wav' }), { status: 200 }))
+      await generating
+    } finally { globalThis.fetch = originalFetch }
+    assert.ok(line.audioAssetId)
+    assert.equal((await loadWorkspaceProject(oldId)).scriptList.find(s => s.id === secondId).data.scriptLines[0].audioAssetId, line.audioAssetId)
+    const lineUrl = line.audioUrl
+    w.removeScriptLine(0)
+    assert.equal(revoked.filter(url => url === lineUrl).length, 1)
+    assert.equal(line.audioUrl, '')
+
+    const parts = []
+    for await (const part of exportArchiveParts(snapshot('incoming'), [], indexedDbAssetStore)) parts.push(part.blob)
+    const originalPut = indexedDbAssetStore.put
+    for (const [action, form, kind] of [
+      ['handleTimbreFileUpload', 'timbreForm', 'voice'],
+      ['handleSfxFileUpload', 'sfxForm', 'sfx'],
+      ['handleBgmFileUpload', 'bgmForm', 'bgm'],
+    ]) {
+      const entered = deferred()
+      const release = deferred()
+      let writtenProjectId
+      indexedDbAssetStore.put = async function (blob, metadata) {
+        writtenProjectId = metadata.projectId
+        entered.resolve()
+        await release.promise
+        return originalPut.call(this, blob, metadata)
+      }
+      let upload
+      try {
+        upload = w[action]({ target: { files: [new File(['library audio'], `${kind}.wav`, { type: 'audio/wav' })], value: 'selected' } })
+        await within(entered.promise, `${kind} upload`)
+        w.switchScript('default')
+        assert.equal(w.currentScriptId.value, secondId, `${kind} upload must block script switch`)
+        await w.handleImportFile({ target: { files: parts, value: 'selected' } })
+        assert.equal(await getActiveProjectId(), oldId, `${kind} upload must block project replacement`)
+        release.resolve()
+        await upload
+        assert.equal(writtenProjectId, oldId)
+        assert.ok((await indexedDbAssetStore.list(oldId)).some(asset => asset.id === w[form].value.assetId && asset.kind === kind))
+      } finally {
+        release.resolve()
+        await upload?.catch(() => {})
+        indexedDbAssetStore.put = originalPut
+      }
+    }
+
+    // A second inactive rename made while the first save is in flight must remain dirty.
+    await sleep(1150)
+    const db = await openWorkspaceDB()
+    const originalTransaction = db.transaction
+    const saveEntered = deferred()
+    const releaseSave = deferred()
+    let intercepted = false
+    db.transaction = function (stores, mode, ...rest) {
+      if (!intercepted && mode === 'readwrite' && stores.includes('projects') && stores.includes('scripts')) {
+        intercepted = true
+        const writes = []
+        const fake = {
+          oncomplete: null, onabort: null, onerror: null,
+          objectStore: name => ({ put: (value, key) => { writes.push([name, structuredClone(value), key]) } }),
+        }
+        saveEntered.resolve()
+        void releaseSave.promise.then(() => {
+          const real = originalTransaction.call(db, stores, mode, ...rest)
+          real.oncomplete = event => fake.oncomplete?.(event)
+          real.onabort = event => fake.onabort?.(event)
+          real.onerror = event => fake.onerror?.(event)
+          for (const [name, value, key] of writes) real.objectStore(name).put(value, key)
+        })
+        return fake
+      }
+      return originalTransaction.call(this, stores, mode, ...rest)
+    }
+    try {
+      const inactive = w.scriptList.value.find(s => s.id === 'default')
+      inactive.name = 'First queued rename'
+      w.startEditingScript('default')
+      w.stopEditingScript()
+      await within(saveEntered.promise, 'delayed save')
+      inactive.name = 'Second queued rename'
+      w.startEditingScript('default')
+      w.stopEditingScript()
+      releaseSave.resolve()
+      await sleep(1150)
+      assert.equal((await loadWorkspaceProject(oldId)).scriptList.find(s => s.id === 'default').name, 'Second queued rename')
+    } finally {
+      releaseSave.resolve()
+      db.transaction = originalTransaction
+    }
+
+    await w.handleImportFile({ target: { files: [new Blob(['invalid archive'])], value: 'selected' } })
+    assert.equal(await getActiveProjectId(), oldId)
+    assert.ok(await loadWorkspaceProject(oldId))
+    assert.ok(await indexedDbAssetStore.get(oldAsset.id))
+
+    await w.handleImportFile({ target: { files: parts, value: 'selected' } })
+    const activeId = await getActiveProjectId()
+    assert.notEqual(activeId, oldId)
+    assert.ok(await loadWorkspaceProject(activeId))
+    assert.equal(await loadWorkspaceProject(oldId), null)
+    assert.equal(await indexedDbAssetStore.get(oldAsset.id), null)
+  } catch (error) {
+    console.error('Workspace integration test failed:', error)
+    throw error
+  } finally { unmount() }
+})

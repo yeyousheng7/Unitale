@@ -130,10 +130,10 @@ export default defineComponent({
                                     <option value="stop">{{ $t("停止") }}</option>
                                 </select>
                                 <div class="flex-1 min-w-[220px] flex items-center gap-2">
-                                    <select v-if="line.action === 'play'" v-model="line.bgmName"
+                                    <select v-if="line.action === 'play'" v-model="line.bgmId"
                                         class="flex-1 px-2 py-1.5 text-xs border rounded bg-white focus:ring-1 focus:ring-purple-500 outline-none font-bold text-purple-700">
                                         <option value="" disabled>{{ $t("-- 选择背景音乐 --") }}</option>
-                                        <option v-for="s in bgmLibrary" :key="s.id" :value="s.name">{{ s.name }}</option>
+                                        <option v-for="s in bgmLibrary" :key="s.id" :value="s.id">{{ s.name }}</option>
                                     </select>
                                     <div v-else class="flex-1 text-xs text-slate-400 italic py-1.5 px-2">
                                         {{ $t("停止当前播放的所有背景音乐") }}
