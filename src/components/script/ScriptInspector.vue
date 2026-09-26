@@ -62,17 +62,6 @@ export default defineComponent({
                 <div v-show="view === 'production'" class="inspector-panel voice-panel">
                     <h3>{{ $t("生成与试听") }}</h3>
                     <div class="production-setup-row">
-                        <div class="production-tts-field">
-                            <label class="field-label" for="script-tts-config">{{ $t("TTS 服务") }}</label>
-                            <select id="script-tts-config" v-model="currentTtsConfigId"
-                                class="voice-service-select"
-                                :title='$t("选择用于生成的 TTS 服务")'>
-                                <option value="" disabled>{{ $t("-- 选择 TTS 模型 --") }}</option>
-                                <option v-for="conf in ttsConfigs" :key="conf.id" :value="conf.id">
-                                    {{ conf.name }}
-                                </option>
-                            </select>
-                        </div>
                         <div class="production-scope-field">
                             <span class="field-label">{{ $t("生成与播放起点") }}</span>
                             <div class="production-scope-value">

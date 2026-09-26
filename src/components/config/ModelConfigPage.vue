@@ -10,7 +10,7 @@ export default defineComponent({ setup: useWorkspace })
             <div class="config-page-intro">
                 <span class="config-eyebrow">{{ $t("工作区设置") }}</span>
                 <h2>{{ $t("连接创作服务") }}</h2>
-                <p>{{ $t("分别管理文本分析模型和语音合成服务，保存后可在脚本制作页选择。") }}</p>
+                <p>{{ $t("分别管理文本分析模型和语音合成服务，保存后可在制作页面顶部选择。") }}</p>
             </div>
 
             <section class="config-section" aria-labelledby="llm-config-title">

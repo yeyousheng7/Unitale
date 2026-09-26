@@ -53,16 +53,6 @@ export default defineComponent({
                         :placeholder='$t("请粘贴小说内容或剧本原文...")'></textarea>
 
                     <div class="script-analysis-toolbar">
-                        <div class="script-analysis-model">
-                            <label for="script-analysis-model">{{ $t("分析模型") }}</label>
-                            <select id="script-analysis-model" v-model="currentConfigId"
-                                :title='$t("选择用于分析的 LLM 模型")'>
-                                <option value="" disabled>{{ $t("-- 选择LLM模型 --") }}</option>
-                                <option v-for="conf in llmConfigs" :key="conf.id" :value="conf.id">
-                                    {{ conf.name }}
-                                </option>
-                            </select>
-                        </div>
                         <label class="script-image-count-setting">
                             <span>{{ $t("背景图片") }}</span>
                             <input type="number" v-model.number="bgImageCount" min="0" max="100"
