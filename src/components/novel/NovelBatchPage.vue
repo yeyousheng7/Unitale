@@ -4,6 +4,7 @@ import { useWorkspace } from '../../context/workspace'
 import { useI18n } from '../../i18n'
 import { isEmptyNovel } from '../../services/novel/novelImport'
 import { parseTxtNovel, type ParsedTxtNovel } from '../../services/text/txtNovelParser'
+import { incompleteNovelChapters } from '../../services/novel/novelExport'
 import ScriptWorkspace from '../script/ScriptWorkspace.vue'
 
 const workspace = useWorkspace()
@@ -42,6 +43,8 @@ const editorChapter = computed(() => workspace.scriptList.value.find(script => s
 const analysisFailures = computed(() => chapterRows.value.filter((row: any) => !!row.script.data.analysisError).length)
 const ttsFailures = computed(() => chapterRows.value.reduce((count: number, row: any) =>
   count + row.script.data.scriptLines.filter((line: any) => !!line.ttsError).length, 0))
+const incompleteExport = computed(() => incompleteNovelChapters(chapterRows.value
+  .filter((row: any) => selectedIds.value.has(row.id)).map((row: any) => row.script)))
 const novelRoles = computed<string[]>(() => [...new Set<string>(chapterRows.value.flatMap((row: any) =>
   (row.script.data.characters || []).map((character: any) => String(character.name || '').trim())).filter(Boolean))].sort())
 const batchRunning = computed(() => workspace.novelBatch.value.running && workspace.novelBatch.value.novelId === activeNovel.value?.id)
@@ -125,6 +128,12 @@ async function runTts(failedOnly = false, rerun = false) {
   if (rerun && !window.confirm(t('novel.regenerateConfirm'))) return
   error.value = ''
   try { await workspace.generateNovelBatch(activeNovel.value.id, { failedOnly, rerun }) }
+  catch (cause) { error.value = String(cause) }
+}
+async function exportSelected() {
+  if (!activeNovel.value) return
+  error.value = ''
+  try { await workspace.exportNovelBatch(activeNovel.value.id) }
   catch (cause) { error.value = String(cause) }
 }
 function setRoleTimbre(role: string, event: Event, overwrite = false) {
@@ -223,6 +232,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           <button type="button" :disabled="batchRunning" class="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white disabled:opacity-40" @click="runTts()">{{ t('novel.generateMissing') }}</button>
           <button type="button" :disabled="batchRunning" class="rounded-lg border border-slate-300 px-4 py-2 disabled:opacity-40" @click="runTts(true)">{{ t('novel.retryTts') }}</button>
           <button type="button" :disabled="batchRunning" class="rounded-lg border border-slate-300 px-4 py-2 disabled:opacity-40" @click="runTts(false, true)">{{ t('novel.regenerateAll') }}</button>
+        </div>
+      </div>
+
+      <div class="rounded-2xl border border-slate-200 bg-white p-5">
+        <h2 class="text-lg font-bold text-slate-900">{{ t('novel.batchExport') }}</h2>
+        <p class="mt-1 text-sm text-slate-500">{{ t('novel.exportHint') }}</p>
+        <p v-if="incompleteExport.length" class="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">{{ t('novel.incompleteChapters') }} ({{ incompleteExport.length }}): {{ incompleteExport.slice(0, 8).join('、') }}{{ incompleteExport.length > 8 ? '…' : '' }}</p>
+        <div class="mt-4 flex items-center gap-3">
+          <button type="button" :disabled="batchRunning || incompleteExport.length > 0 || !activeNovel.selectedChapterIds.length" class="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white disabled:opacity-40" @click="exportSelected">{{ t('novel.exportZip') }}</button>
+          <span v-if="batchRunning && workspace.novelBatch.value.phase === 'export'" class="text-sm text-slate-500">{{ workspace.novelBatch.value.current }} / {{ workspace.novelBatch.value.total }}</span>
         </div>
       </div>
 

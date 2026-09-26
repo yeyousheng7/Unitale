@@ -19,6 +19,7 @@ import { requestService } from '../services/api/client'
 import { buildNovelImport } from '../services/novel/novelImport'
 import { analyzeNovelChapter } from '../services/novel/novelAnalysis'
 import { missingNovelVoices, synthesizeNovelLine } from '../services/novel/novelTts'
+import { exportNovelChaptersZip, incompleteNovelChapters } from '../services/novel/novelExport'
 
 export function useUnitaleWorkspace() {
                   const { locale, t: translateMessage } = useI18n();
@@ -2862,6 +2863,52 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       }
                   };
 
+                  const exportNovelBatch = async (novelId) => {
+                      if (hasActiveMediaTask() || novelEditorId.value) throw new Error(translateMessage('storage.busy'));
+                      const novel = novels.value.find(item => item.id === novelId);
+                      if (!novel) throw new Error('Novel not found');
+                      const selected = new Set(novel.selectedChapterIds);
+                      const scripts = novel.chapterIds.map(id => scriptList.value.find(script => script.id === id))
+                          .filter(script => script && selected.has(script.id));
+                      if (!scripts.length) throw new Error('Select chapters to export');
+                      const incomplete = incompleteNovelChapters(scripts);
+                      if (incomplete.length) throw new Error(`未完成配音：${incomplete.slice(0, 12).join('、')}${incomplete.length > 12 ? ` 等 ${incomplete.length} 章` : ''}`);
+                      let writable = null;
+                      const fileName = `${novel.title.replace(/[\\/:*?"<>|]/g, '_') || 'Unitale'}_WAV_SRT.zip`;
+                      if (window.showSaveFilePicker) {
+                          try {
+                              const handle = await window.showSaveFilePicker({ suggestedName: fileName,
+                                  types: [{ description: 'ZIP archive', accept: { 'application/zip': ['.zip'] } }] });
+                              writable = await handle.createWritable();
+                          } catch (error) {
+                              if (error?.name === 'AbortError') return;
+                              console.warn('Streaming ZIP picker unavailable', error);
+                          }
+                      }
+                      const projectId = activeProjectId.value;
+                      const store = activeAssetStore;
+                      const controller = new AbortController();
+                      const copy = value => JSON.parse(JSON.stringify(value));
+                      novelBatchController = controller;
+                      novelBatch.value = { running: true, novelId, phase: 'export', current: 0, total: scripts.length, failed: 0 };
+                      activeScriptTasks++;
+                      try {
+                          const blob = await exportNovelChaptersZip({ scripts: copy(scripts), store, cache: decodedCache,
+                              libraries: { sfx: copy(sfxLibrary.value), bgm: copy(bgmLibrary.value), filters: copy(filterLibrary.value) },
+                              decode: async media => audioContext.decodeAudioData(await media.arrayBuffer()),
+                              signal: controller.signal, writer: writable || undefined,
+                              onProgress: current => { novelBatch.value.current = current; } });
+                          if (!controller.signal.aborted && projectId === activeProjectId.value && store === activeAssetStore && blob) {
+                              downloadArchivePart({ name: fileName, blob });
+                          }
+                      } finally {
+                          novelBatch.value.running = false;
+                          novelBatchController = null;
+                          activeScriptTasks--;
+                          if (controller.signal.aborted && writable) try { await writable.abort(); } catch { /* already closed */ }
+                      }
+                  };
+
                   const openNovelChapter = (id) => {
                       const chapter = scriptList.value.find(script => script.id === id && script.kind === 'novelChapter');
                       if (!chapter || hasActiveMediaTask() || novelEditorId.value) return false;
@@ -4346,7 +4393,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       scriptListContainer,
                       scriptList, novels, currentScriptId, switchScript, addScript, deleteScriptTab,
                       novelEditorId, novelBatch, commitNovelImport, setNovelSelection, setNovelRoleTimbre,
-                      analyzeNovelBatch, generateNovelBatch, stopNovelBatch, openNovelChapter, closeNovelChapter,
+                      analyzeNovelBatch, generateNovelBatch, exportNovelBatch, stopNovelBatch, openNovelChapter, closeNovelChapter,
                       editingScriptId, startEditingScript, stopEditingScript, scriptNameInputRefs,
 
                       generationLanguage,
