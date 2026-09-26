@@ -67,6 +67,7 @@ export function useUnitaleWorkspace() {
                       const projectData = createProjectSaveSnapshot({
                           characters: characters.value,
                           scriptList: scriptList.value,
+                          novels: novels.value,
                           currentScriptId: currentScriptId.value,
                           libraries: {
                               sfx: sfxLibrary.value,
@@ -205,7 +206,11 @@ export function useUnitaleWorkspace() {
                   const selectedLineIndex = ref(-1);
 
                   // --- 多脚本管理逻辑 ---
-                  const scriptList = ref([{ id: 'default', name: translateMessage('data.defaultScriptName', { number: 1 }), data: { rawScript: '', scriptLines: [], rawAnalysisResult: '', characters: [] } }]);
+                  const scriptList = ref(/** @type {import('../types/project').ScriptDocument[]} */ ([
+                      { id: 'default', name: translateMessage('data.defaultScriptName', { number: 1 }),
+                          data: { rawScript: '', scriptLines: [], rawAnalysisResult: '', characters: [] } }
+                  ]));
+                  const novels = ref(/** @type {any[]} */ ([]));
                   const currentScriptId = ref('default');
                   const editingScriptId = ref(null);
                   const scriptNameInputRefs = ref(/** @type {Record<string, any>} */ ({}));
@@ -254,7 +259,7 @@ export function useUnitaleWorkspace() {
                       }
                       syncCurrentScriptState();
                       const newId = Date.now().toString();
-                      const num = scriptList.value.length + 1;
+                      const num = scriptList.value.filter(script => script.kind !== 'novelChapter').length + 1;
                       const newScript = {
                           id: newId,
                           name: translateMessage('data.defaultScriptName', { number: num }),
@@ -590,6 +595,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           const snapshot = createProjectSnapshot({
                               characters: characters.value,
                               scriptList: scriptList.value,
+                              novels: novels.value,
                               currentScriptId: currentScriptId.value,
                               libraries: { sfx: sfxLibrary.value, bgm: bgmLibrary.value, timbres: timbres.value,
                                   filters: filterLibrary.value, emotions: emotionPresets.value }
@@ -1189,6 +1195,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                                   }
                               });
                               scriptList.value = projectData.scriptList;
+                              novels.value = projectData.novels || [];
                               currentScriptId.value = projectData.currentScriptId || (scriptList.value.length > 0 ? scriptList.value[0].id : 'default');
 
                                // Load active script into view immediately
@@ -2391,6 +2398,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       return createProjectSnapshot({
                           characters: characters.value,
                           scriptList: scriptList.value,
+                          novels: novels.value,
                           currentScriptId: currentScriptId.value,
                           libraries: { sfx: sfxLibrary.value, bgm: bgmLibrary.value,
                               timbres: timbres.value, filters: filterLibrary.value,
@@ -2495,6 +2503,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       }
                       previewPlayingFile.value = null;
                       scriptList.value = snapshot.scriptList;
+                      novels.value = snapshot.novels || [];
                       currentScriptId.value = snapshot.currentScriptId;
                       sfxLibrary.value = snapshot.libraries.sfx;
                       bgmLibrary.value = snapshot.libraries.bgm;
@@ -4117,7 +4126,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       playScriptSequentially, stopScriptSequentially, isSequencePlaying, currentSequenceIndex,
                       lineRefs,
                       scriptListContainer,
-                      scriptList, currentScriptId, switchScript, addScript, deleteScriptTab,
+                      scriptList, novels, currentScriptId, switchScript, addScript, deleteScriptTab,
                       editingScriptId, startEditingScript, stopEditingScript, scriptNameInputRefs,
 
                       generationLanguage,

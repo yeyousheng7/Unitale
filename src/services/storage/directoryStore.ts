@@ -95,7 +95,7 @@ export class DirectoryProjectStore implements AssetStore {
       manifest.assets.push({ ...ref, projectId, backend: 'directory', location: assetPath(ref.id) })
     }
     const project = { characters: snapshot.characters, currentScriptId: snapshot.currentScriptId,
-      libraries: snapshot.libraries, timestamp: snapshot.timestamp }
+      libraries: snapshot.libraries, novels: snapshot.novels || [], timestamp: snapshot.timestamp }
     manifest.projectPath = projectPath()
     await writeJson(root, manifest.projectPath, project)
     for (const script of snapshot.scriptList) {
@@ -129,7 +129,7 @@ export class DirectoryProjectStore implements AssetStore {
       const obsoletePaths = [old.projectPath]
       await writeJson(this.handle, next.projectPath, {
         characters: snapshot.characters, currentScriptId: snapshot.currentScriptId,
-        libraries: snapshot.libraries, timestamp: snapshot.timestamp,
+        libraries: snapshot.libraries, novels: snapshot.novels || [], timestamp: snapshot.timestamp,
       })
       const currentIds = new Set(snapshot.scriptList.map(script => script.id))
       next.scripts = next.scripts.filter(entry => {

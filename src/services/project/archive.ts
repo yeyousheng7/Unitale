@@ -35,7 +35,7 @@ function planArchive(snapshot: ProjectSnapshot, refs: AssetRef[], targetBytes: n
   if (missing.length) throw new Error(`Missing media assets: ${missing.join(', ')}`)
 
   const project = { characters: snapshot.characters, currentScriptId: snapshot.currentScriptId,
-    libraries: snapshot.libraries, timestamp: snapshot.timestamp }
+    libraries: snapshot.libraries, novels: snapshot.novels || [], timestamp: snapshot.timestamp }
   const parts: ArchiveEntry[][] = [[{ path: 'project.json', text: JSON.stringify(project) }]]
   let partBytes = new Blob([parts[0]![0]!.text!]).size
   if (partBytes > targetBytes) throw new Error('Project metadata exceeds the archive part size')

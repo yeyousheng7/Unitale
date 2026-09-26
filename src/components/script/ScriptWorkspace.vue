@@ -10,6 +10,7 @@ type WorkspaceView = 'source' | 'script' | 'characters' | 'production'
 const workspace = useWorkspace()
 const { t } = useI18n()
 const { scriptList, currentScriptId, editingScriptId, scriptNameInputRefs } = workspace
+const standaloneScripts = computed(() => scriptList.value.filter(script => script.kind !== 'novelChapter'))
 const activeView = ref<WorkspaceView>(workspace.scriptLines.value.length ? 'script' : 'source')
 const scriptMenuRef = ref<HTMLDetailsElement | null>(null)
 const openActionId = ref<string | null>(null)
@@ -85,7 +86,7 @@ watch(() => workspace.scriptLines.value.length, (length, previousLength) => {
             </summary>
             <div class="script-switcher-menu">
               <div class="script-switcher-list" role="group" :aria-label='$t("脚本列表")'>
-                <div v-for="script in scriptList" :key="script.id"
+                <div v-for="script in standaloneScripts" :key="script.id"
                   :class="['script-switcher-row', { 'is-active': currentScriptId === script.id }]">
                   <div class="script-switcher-row-main">
                     <button v-if="editingScriptId !== script.id" type="button" class="script-switcher-option"

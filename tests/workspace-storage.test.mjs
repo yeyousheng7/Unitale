@@ -46,6 +46,23 @@ test('archive roundtrips multiple scripts and media with checksums', async () =>
   assert.equal((await loadWorkspaceProject(imported.projectId)).scriptList.length, 2)
 })
 
+test('novel membership and chapter kind survive incremental storage and archive import', async () => {
+  const source = snapshot('')
+  source.scriptList[0].data.scriptLines = []
+  source.scriptList[0].kind = 'novelChapter'
+  source.scriptList[0].novelId = 'novel-one'
+  source.novels = [{ id: 'novel-one', title: '长夜微光', sourceFileName: '长夜微光.txt',
+    encoding: 'gb18030', chapterIds: ['first'], selectedChapterIds: ['first'],
+    roleTimbreIds: { 林夏: 'voice-one' } }]
+  await saveWorkspaceProject(source, new Set(['first', 'second']), 'novel-storage')
+  assert.deepEqual((await loadWorkspaceProject('novel-storage')).novels, source.novels)
+  const parts = []
+  for await (const part of exportArchiveParts(source, [], indexedDbAssetStore)) parts.push(part.blob)
+  const imported = await importArchiveParts(parts, indexedDbAssetStore)
+  assert.deepEqual(imported.snapshot.novels, source.novels)
+  assert.equal((await loadWorkspaceProject(imported.projectId)).scriptList[0].kind, 'novelChapter')
+})
+
 test('unbound character voice and cleared line audio roundtrip as absent references', async () => {
   const source = snapshot('')
   source.characters.push({ id: 'character', name: 'Narrator', voiceAssetId: '' })

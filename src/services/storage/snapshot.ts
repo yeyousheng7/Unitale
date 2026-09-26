@@ -1,6 +1,6 @@
 import type { ProjectSnapshot } from '../../types/project'
 
-type SnapshotInput = Pick<ProjectSnapshot, 'characters' | 'scriptList' | 'currentScriptId' | 'libraries'>
+type SnapshotInput = Pick<ProjectSnapshot, 'characters' | 'scriptList' | 'novels' | 'currentScriptId' | 'libraries'>
 
 function omitEmptyAssetIds<T extends Record<string, unknown>>(item: T, keys: string[]): T {
   const result = { ...item }
@@ -35,6 +35,7 @@ export function createProjectSnapshot(input: SnapshotInput): ProjectSnapshot {
       return omitEmptyAssetIds(rest, ['voiceAssetId'])
     }),
     scriptList: plainScriptList,
+    novels: input.novels || [],
     currentScriptId: input.currentScriptId,
     libraries: {
       ...input.libraries,

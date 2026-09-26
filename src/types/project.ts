@@ -13,6 +13,9 @@ export interface Character {
 export interface ScriptDocument {
   id: string
   name: string
+  /** Missing on earlier workspaces; treat as a standalone script. */
+  kind?: 'standalone' | 'novelChapter'
+  novelId?: string
   data: {
     rawScript: string
     scriptLines: ScriptLine[]
@@ -20,6 +23,18 @@ export interface ScriptDocument {
     characters: Character[]
     [key: string]: unknown
   }
+}
+
+export interface NovelDocument {
+  id: string
+  title: string
+  sourceFileName: string
+  encoding: string
+  /** All chapters in source order, including chapters excluded from the current batch. */
+  chapterIds: string[]
+  selectedChapterIds: string[]
+  /** Role name -> project timbre library entry ID. */
+  roleTimbreIds: Record<string, string>
 }
 
 export interface ProjectLibraries {
@@ -33,6 +48,7 @@ export interface ProjectLibraries {
 export interface ProjectSnapshot {
   characters: Character[]
   scriptList: ScriptDocument[]
+  novels?: NovelDocument[]
   currentScriptId: string
   libraries: ProjectLibraries
   timestamp: number

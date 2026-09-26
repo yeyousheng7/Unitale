@@ -57,10 +57,13 @@ test('directory project reopens from manifest without browser database', async (
   assert.equal(await (await reopened.get(ref.id)).text(), 'voice')
   assert.equal((await reopened.list(reopened.projectId))[0].backend, 'directory')
   const next = snapshot(ref.id)
+  next.novels = [{ id: 'book', title: 'Book', sourceFileName: 'book.txt', encoding: 'utf-8',
+    chapterIds: ['one'], selectedChapterIds: ['one'], roleTimbreIds: {} }]
   next.scriptList[0].data.rawScript = 'edited'
   await reopened.saveProject(next, new Set(['one']))
   const again = await DirectoryProjectStore.open(first.handle)
   assert.equal((await again.loadProject()).scriptList[0].data.rawScript, 'edited')
+  assert.deepEqual((await again.loadProject()).novels, next.novels)
 })
 
 test('failed migration never writes a valid manifest', async () => {

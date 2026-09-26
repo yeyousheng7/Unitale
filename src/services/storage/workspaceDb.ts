@@ -96,13 +96,15 @@ interface ProjectHeader {
   currentScriptId: string
   libraries: ProjectSnapshot['libraries']
   scriptIds: string[]
+  novels?: ProjectSnapshot['novels']
   timestamp: number
 }
 
 export async function saveWorkspaceProject(data: ProjectSnapshot, changedScriptIds?: ReadonlySet<string>, projectId = DEFAULT_PROJECT_ID): Promise<void> {
   const header: ProjectHeader = {
     id: projectId, characters: data.characters, currentScriptId: data.currentScriptId,
-    libraries: data.libraries, scriptIds: data.scriptList.map(script => script.id), timestamp: data.timestamp,
+    libraries: data.libraries, scriptIds: data.scriptList.map(script => script.id),
+    novels: data.novels || [], timestamp: data.timestamp,
   }
   const writes = changedScriptIds
     ? data.scriptList.filter(script => changedScriptIds.has(script.id)) : data.scriptList
@@ -122,7 +124,7 @@ export async function loadWorkspaceProject(projectId = DEFAULT_PROJECT_ID): Prom
   const scripts = await Promise.all(header.scriptIds.map(id => loadWorkspaceScript(id, projectId)))
   if (scripts.some(script => script === null)) throw new Error(`Project ${projectId} has missing script records`)
   return { characters: header.characters, currentScriptId: header.currentScriptId,
-    libraries: header.libraries, timestamp: header.timestamp,
+    libraries: header.libraries, novels: header.novels || [], timestamp: header.timestamp,
     scriptList: scripts.filter((script): script is ScriptDocument => script !== null) }
 }
 
