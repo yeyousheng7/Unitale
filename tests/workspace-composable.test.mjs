@@ -303,6 +303,8 @@ test('novel TTS stops after completed lines and restores saved audio on refresh'
     const novelId = await w.commitNovelImport('voice.txt', { encoding: 'utf-8', intro: null,
       chapters: [{ title: '第一章', content: '甲说了两句。' }] })
     const chapterId = w.novels.value.find(item => item.id === novelId).chapterIds[0]
+    await assert.rejects(w.generateNovelBatch(novelId, [chapterId]), /先完成所选章节的分析/)
+    assert.equal(w.novelBatch.value.running, false)
     assert.equal(w.openNovelChapter(chapterId), true)
     w.characters.value = [{ id: 'speaker', name: '甲', voiceFile: '/server/voice.wav', voiceAssetId: '' }]
     w.scriptLines.value = [
@@ -324,6 +326,8 @@ test('novel TTS stops after completed lines and restores saved audio on refresh'
     const batch = w.generateNovelBatch(novelId, [chapterId])
     await within(secondEntered.promise, 'second chapter line')
     assert.equal(w.currentScriptId.value, 'default')
+    await assert.rejects(w.generateNovelBatch(novelId, [chapterId]), /请先停止当前/)
+    await assert.rejects(w.analyzeNovelBatch(novelId, [chapterId]), /请先停止当前/)
     w.stopNovelBatch()
     releaseSecond.resolve()
     await batch

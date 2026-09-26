@@ -2844,12 +2844,15 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       if (hasActiveMediaTask() || novelEditorId.value) throw new Error(translateMessage('storage.busy'));
                       const novel = novels.value.find(item => item.id === novelId);
                       if (!novel) throw new Error('Novel not found');
-                      const config = currentTtsConfig.value;
-                      if (!config) throw new Error('Select a TTS service first');
                       const validIds = new Set(novel.chapterIds);
                       const selected = new Set(chapterIds.filter(id => validIds.has(id)));
                       const chapters = novel.chapterIds.map(id => scriptList.value.find(script => script.id === id))
-                          .filter(script => script && selected.has(script.id) && script.data.scriptLines.length);
+                          .filter(script => script && selected.has(script.id));
+                      if (chapters.some(script => !script.data.scriptLines.length)) {
+                          throw new Error(translateMessage('novel.completeAnalysisFirst'));
+                      }
+                      const config = currentTtsConfig.value;
+                      if (!config) throw new Error('Select a TTS service first');
                       const targets = chapters.flatMap(script => script.data.scriptLines
                           .filter(line => line.type === 'dialogue' && line.text?.trim() && (failedOnly || rerun || !line.audioAssetId) &&
                               (!failedOnly || line.ttsError))
