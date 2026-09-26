@@ -3,7 +3,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useWorkspace } from '../../context/workspace'
 import { useI18n } from '../../i18n'
 import { isEmptyNovel } from '../../services/novel/novelImport'
-import { updateChapterSelection, type ChapterSelectionAction } from '../../services/novel/chapterSelection'
+import { selectChapterRange, updateChapterSelection, type ChapterSelectionAction } from '../../services/novel/chapterSelection'
+import { chapterProgress } from '../../services/novel/chapterProgress'
 import { parseTxtNovel, type ParsedTxtNovel } from '../../services/text/txtNovelParser'
 import { incompleteNovelChapters } from '../../services/novel/novelExport'
 import ScriptWorkspace from '../script/ScriptWorkspace.vue'
@@ -29,9 +30,17 @@ const activeNovel = computed(() => workspace.novels.value.find(novel => novel.id
 const novelTitleInput = ref<HTMLInputElement | null>(null)
 const novelMenu = ref<HTMLDetailsElement | null>(null)
 const chapterSelectionMenu = ref<HTMLDetailsElement | null>(null)
+const batchActionsMenu = ref<HTMLDetailsElement | null>(null)
 const renamingNovelId = ref('')
 const novelTitleDraft = ref('')
 const search = ref('')
+const statusFilter = ref('all')
+const novelView = ref<'chapters' | 'roles'>('chapters')
+const selectionNotice = ref('')
+const rangeStart = ref<number | null>(null)
+const rangeEnd = ref<number | null>(null)
+const rangeError = ref('')
+let selectionNoticeTimer: ReturnType<typeof setTimeout> | null = null
 const page = ref(0)
 const pageSize = ref(50)
 const selectionByNovel = ref<Record<string, string[]>>({})
@@ -39,11 +48,26 @@ const chapterRows = computed(() => {
   const novel = activeNovel.value
   if (!novel) return []
   const scripts = new Map(workspace.scriptList.value.map(script => [script.id, script]))
-  return novel.chapterIds.map((id: string, index: number) => ({ id, index, script: scripts.get(id) }))
+  return novel.chapterIds.map((id: string, index: number) => ({ id, index,
+    number: id === novel.introScriptId ? null : index + 1 - (novel.introScriptId ? 1 : 0),
+    script: scripts.get(id) }))
     .filter((row: { script: unknown }) => !!row.script)
 })
-const filteredRows = computed(() => chapterRows.value.filter((row: any) =>
-  row.script.name.toLowerCase().includes(search.value.trim().toLowerCase())))
+const numberedRows = computed(() => chapterRows.value.filter((row: any) => row.number !== null))
+const filteredRows = computed(() => chapterRows.value.filter((row: any) => {
+  if (!row.script.name.toLowerCase().includes(search.value.trim().toLowerCase())) return false
+  const progress = chapterProgress(row.script)
+  switch (statusFilter.value) {
+    case 'analysisPending': return progress.analysis === 'pending'
+    case 'analysisFailed': return progress.analysis === 'failed'
+    case 'analyzed': return progress.analysis === 'analyzed'
+    case 'audioPending': return progress.analysis === 'analyzed' && progress.audio === 'pending'
+    case 'audioPartial': return progress.audio === 'partial'
+    case 'audioComplete': return progress.audio === 'complete'
+    case 'audioFailed': return progress.failed > 0
+    default: return true
+  }
+}))
 const visibleRows = computed(() => filteredRows.value.slice(page.value * pageSize.value, (page.value + 1) * pageSize.value))
 const pageCount = computed(() => Math.max(1, Math.ceil(filteredRows.value.length / pageSize.value)))
 const selectedIds = computed(() => new Set<string>(selectionByNovel.value[activeNovel.value?.id || ''] || []))
@@ -60,24 +84,48 @@ const editorVoiceChoices = computed(() => workspace.characters.value.flatMap((ch
   const timbre = workspace.timbres.value.find(item => item.refPath === character.voiceFile)
   return timbre ? [{ role: String(character.name || '').trim(), timbre }] : []
 }).filter((item: any) => item.role))
-const analysisFailures = computed(() => chapterRows.value.filter((row: any) => !!row.script.data.analysisError).length)
-const ttsFailures = computed(() => chapterRows.value.reduce((count: number, row: any) =>
-  count + row.script.data.scriptLines.filter((line: any) => !!line.ttsError).length, 0))
+const selectedRows = computed(() => chapterRows.value.filter((row: any) => selectedIds.value.has(row.id)))
+const selectedAnalysisFailures = computed(() => selectedRows.value.filter((row: any) => chapterProgress(row.script).analysis === 'failed').length)
+const selectedTtsFailures = computed(() => selectedRows.value.reduce((count: number, row: any) => count + chapterProgress(row.script).failed, 0))
 const incompleteExport = computed(() => incompleteNovelChapters(chapterRows.value
   .filter((row: any) => selectedIds.value.has(row.id)).map((row: any) => row.script)))
 const novelRoles = computed<string[]>(() => [...new Set<string>(chapterRows.value.flatMap((row: any) =>
   (row.script.data.characters || []).map((character: any) => String(character.name || '').trim())).filter(Boolean))].sort())
 const batchRunning = computed(() => workspace.novelBatch.value.running)
+const analyzedCount = computed(() => numberedRows.value.filter((row: any) => chapterProgress(row.script).analysis === 'analyzed').length)
+const voicedCount = computed(() => numberedRows.value.filter((row: any) => chapterProgress(row.script).audio === 'complete').length)
+const currentBatch = computed(() => workspace.novelBatch.value.novelId === activeNovel.value?.id ? workspace.novelBatch.value : null)
+function batchPhaseLabel(phase: string) {
+  return phase === 'analysis' ? t('novel.taskPhase.analysis') : phase === 'tts'
+    ? t('novel.taskPhase.tts') : t('novel.taskPhase.export')
+}
 
-watch([search, activeNovelId, pageSize], () => { page.value = 0 })
+function showSelectionNotice(message: string) {
+  selectionNotice.value = message
+  if (selectionNoticeTimer) clearTimeout(selectionNoticeTimer)
+  selectionNoticeTimer = setTimeout(() => { selectionNotice.value = '' }, 3500)
+}
+watch([search, statusFilter], () => {
+  page.value = 0
+  if (selectedIds.value.size && activeNovel.value) {
+    selectionByNovel.value[activeNovel.value.id] = []
+    showSelectionNotice(t('novel.selectionClearedByFilter'))
+  }
+})
+watch(pageSize, () => { page.value = 0 })
 watch(activeNovelId, () => {
   if (novelMenu.value) novelMenu.value.open = false
   if (renamingNovelId.value && renamingNovelId.value !== activeNovelId.value) cancelNovelRename()
+  search.value = ''
+  statusFilter.value = 'all'
+  novelView.value = 'chapters'
+  page.value = 0
 })
 watch(batchRunning, running => {
   if (!running) return
   if (novelMenu.value) novelMenu.value.open = false
   if (chapterSelectionMenu.value) chapterSelectionMenu.value.open = false
+  if (batchActionsMenu.value) batchActionsMenu.value.open = false
 })
 watch(() => workspace.novels.value.map(novel => novel.id).join(','), () => {
   if (!workspace.novels.value.some(novel => novel.id === activeNovelId.value)) {
@@ -161,6 +209,17 @@ function changeNovelSelection(action: ChapterSelectionAction) {
   selectionByNovel.value[activeNovel.value.id] = updateChapterSelection(activeNovel.value.chapterIds, selectedIds.value, action, scope)
   if (chapterSelectionMenu.value) chapterSelectionMenu.value.open = false
 }
+function chooseChapterRange() {
+  if (!activeNovel.value || batchRunning.value) return
+  try {
+    selectionByNovel.value[activeNovel.value.id] = selectChapterRange(
+      numberedRows.value.map((row: { id: string }) => row.id), Number(rangeStart.value), Number(rangeEnd.value))
+    rangeError.value = ''
+    if (chapterSelectionMenu.value) chapterSelectionMenu.value.open = false
+  } catch {
+    rangeError.value = t('novel.rangeError', { count: numberedRows.value.length })
+  }
+}
 function closeNovelMenu() { if (novelMenu.value) novelMenu.value.open = false }
 function startNovelRename() {
   if (!activeNovel.value || batchRunning.value) return
@@ -191,6 +250,7 @@ function deleteActiveNovel() {
 }
 async function runAnalysis(failedOnly = false, rerun = false) {
   if (!activeNovel.value) return
+  if (batchActionsMenu.value) batchActionsMenu.value.open = false
   if (rerun && !window.confirm(t('novel.rerunConfirm'))) return
   error.value = ''
   try { await workspace.analyzeNovelBatch(activeNovel.value.id, [...selectedIds.value], { failedOnly, rerun }) }
@@ -198,6 +258,7 @@ async function runAnalysis(failedOnly = false, rerun = false) {
 }
 async function runTts(failedOnly = false, rerun = false) {
   if (!activeNovel.value) return
+  if (batchActionsMenu.value) batchActionsMenu.value.open = false
   if (rerun && !window.confirm(t('novel.regenerateConfirm'))) return
   error.value = ''
   try { await workspace.generateNovelBatch(activeNovel.value.id, [...selectedIds.value], { failedOnly, rerun }) }
@@ -236,7 +297,7 @@ function onKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape' && workspace.novelEditorId.value) { event.preventDefault(); closeChapter() }
 }
 function onDocumentPointerDown(event: PointerEvent) {
-  for (const menu of [novelMenu.value, chapterSelectionMenu.value]) {
+  for (const menu of [novelMenu.value, chapterSelectionMenu.value, batchActionsMenu.value]) {
     if (menu?.open && !menu.contains(event.target as Node)) menu.open = false
   }
 }
@@ -245,6 +306,7 @@ onMounted(() => {
   document.addEventListener('pointerdown', onDocumentPointerDown)
 })
 onBeforeUnmount(() => {
+  if (selectionNoticeTimer) clearTimeout(selectionNoticeTimer)
   window.removeEventListener('keydown', onKeydown)
   document.removeEventListener('pointerdown', onDocumentPointerDown)
   if (workspace.novelEditorId.value) workspace.closeNovelChapter()
@@ -252,7 +314,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="space-y-5" aria-label="小说批量处理">
+  <section class="space-y-5" :aria-label="t('page.novel')">
     <input ref="fileInput" type="file" accept=".txt,text/plain" class="hidden" @change="onFileChange">
 
     <div v-if="!activeNovel && !parsed" class="rounded-2xl border border-slate-200 bg-white px-6 py-16 text-center">
@@ -263,130 +325,162 @@ onBeforeUnmount(() => {
     </div>
 
     <template v-if="activeNovel">
-      <p v-if="importNotice" role="status" class="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">{{ importNotice }}</p>
-      <div class="rounded-2xl border border-slate-200 bg-white p-5">
-        <div class="flex flex-wrap items-center justify-between gap-4">
-          <div class="flex flex-wrap items-center gap-2">
-            <label class="mr-3 text-sm text-slate-500" for="novel-select">{{ t('novel.currentNovel') }}</label>
-            <input v-if="renamingNovelId === activeNovel.id" id="novel-select" ref="novelTitleInput" v-model="novelTitleDraft" type="text" :aria-label="t('novel.rename')" class="rounded-lg border border-blue-400 bg-white px-3 py-2 font-semibold text-slate-800" @keydown.enter.stop.prevent="saveNovelRename" @keydown.esc.stop.prevent="cancelNovelRename" @blur="saveNovelRename">
-            <select v-else id="novel-select" v-model="activeNovelId" class="rounded-lg border border-slate-300 bg-white px-3 py-2 font-semibold text-slate-800">
-              <option v-for="novel in workspace.novels.value" :key="novel.id" :value="novel.id">{{ novel.title }}</option>
-            </select>
-            <button v-if="renamingNovelId === activeNovel.id" type="button" class="rounded-lg border border-slate-300 px-3 py-2 text-sm" @click="saveNovelRename">{{ t('novel.saveName') }}</button>
-            <details v-else ref="novelMenu" class="relative" :class="batchRunning ? 'pointer-events-none opacity-40' : ''" :aria-disabled="batchRunning">
-              <summary :aria-label="t('novel.manage')" class="flex h-10 w-10 cursor-pointer list-none items-center justify-center rounded-lg border border-slate-300 text-xl leading-none text-slate-600 hover:bg-slate-50">···</summary>
-              <div class="absolute left-0 z-30 mt-1 min-w-40 rounded-lg border border-slate-200 bg-white p-1 shadow-lg">
-                <button type="button" :disabled="batchRunning" class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-40" @click="startNovelRename">{{ t('novel.rename') }}</button>
-                <button type="button" :disabled="batchRunning" class="block w-full rounded-md px-3 py-2 text-left text-sm text-red-700 hover:bg-red-50 disabled:opacity-40" @click="deleteActiveNovel">{{ t('novel.delete') }}</button>
+      <div v-show="!workspace.novelEditorId.value" class="space-y-4">
+        <p v-if="importNotice" role="status" class="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">{{ importNotice }}</p>
+        <div class="rounded-2xl border border-slate-200 bg-white p-5">
+          <div class="flex flex-wrap items-center justify-between gap-4">
+            <div class="min-w-0">
+              <div class="flex flex-wrap items-center gap-2">
+                <label for="novel-select" class="text-sm text-slate-500">{{ t('novel.currentNovel') }}</label>
+                <input v-if="renamingNovelId === activeNovel.id" id="novel-select" ref="novelTitleInput" v-model="novelTitleDraft" type="text" :aria-label="t('novel.rename')" class="rounded-lg border border-blue-400 bg-white px-3 py-2 font-semibold text-slate-800" @keydown.enter.stop.prevent="saveNovelRename" @keydown.esc.stop.prevent="cancelNovelRename" @blur="saveNovelRename">
+                <select v-else id="novel-select" v-model="activeNovelId" :disabled="batchRunning" class="max-w-72 rounded-lg border border-slate-300 bg-white px-3 py-2 font-semibold text-slate-800">
+                  <option v-for="novel in workspace.novels.value" :key="novel.id" :value="novel.id">{{ novel.title }}</option>
+                </select>
+                <button v-if="renamingNovelId === activeNovel.id" type="button" class="rounded-lg border border-slate-300 px-3 py-2 text-sm" @click="saveNovelRename">{{ t('novel.saveName') }}</button>
               </div>
-            </details>
-            <span class="text-sm text-slate-500">{{ activeNovel.chapterIds.length }} {{ t('novel.chapters') }} · {{ activeNovel.encoding }}</span>
-          </div>
-          <div class="flex flex-wrap items-center gap-2">
-            <button type="button" :disabled="batchRunning" class="rounded-lg border border-slate-300 px-4 py-2 font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-40" @click="chooseFile">{{ t('novel.importAnother') }}</button>
-          </div>
-        </div>
-        <p class="mt-3 text-sm text-slate-500">{{ activeNovel.sourceFileName }} · {{ t('novel.selectedCount') }} {{ selectedIds.size }}</p>
-      </div>
-
-      <div class="grid gap-4 sm:grid-cols-3">
-        <div class="rounded-xl border border-slate-200 bg-white p-4"><span class="text-sm text-slate-500">{{ t('novel.total') }}</span><strong class="mt-1 block text-2xl text-slate-900">{{ chapterRows.length }}</strong></div>
-        <div class="rounded-xl border border-slate-200 bg-white p-4"><span class="text-sm text-slate-500">{{ t('novel.selectedCount') }}</span><strong class="mt-1 block text-2xl text-slate-900">{{ selectedIds.size }}</strong></div>
-        <div class="rounded-xl border border-slate-200 bg-white p-4"><span class="text-sm text-slate-500">{{ t('novel.analyzed') }}</span><strong class="mt-1 block text-2xl text-slate-900">{{ chapterRows.filter((row: any) => row.script.data.scriptLines?.length).length }}</strong></div>
-      </div>
-
-      <div class="rounded-2xl border border-slate-200 bg-white p-5">
-        <div class="flex flex-wrap items-center justify-between gap-3">
-          <div><h2 class="text-lg font-bold text-slate-900">{{ t('novel.batchAnalysis') }}</h2><p class="text-sm text-slate-500">{{ t('novel.analysisHint') }}</p></div>
-          <span v-if="analysisFailures" class="rounded-full bg-red-50 px-3 py-1 text-sm text-red-700">{{ t('novel.failed') }} {{ analysisFailures }}</span>
-        </div>
-        <div class="mt-4 flex flex-wrap items-center gap-2">
-          <button v-if="!batchRunning" type="button" class="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white hover:bg-blue-700" @click="runAnalysis()">{{ t('novel.analyzeSelected') }}</button>
-          <button v-if="!batchRunning" type="button" class="rounded-lg border border-slate-300 px-4 py-2" @click="runAnalysis(true)">{{ t('novel.retryFailed') }}</button>
-          <button v-if="!batchRunning" type="button" class="rounded-lg border border-slate-300 px-4 py-2" @click="runAnalysis(false, true)">{{ t('novel.rerunSelected') }}</button>
-          <button v-if="batchRunning" type="button" class="rounded-lg border border-red-300 px-4 py-2 text-red-700" @click="workspace.stopNovelBatch()">{{ t('novel.stopTask') }}</button>
-          <span v-if="batchRunning" class="text-sm text-slate-600">{{ workspace.novelBatch.value.current }} / {{ workspace.novelBatch.value.total }}</span>
-        </div>
-      </div>
-
-      <div v-if="novelRoles.length" class="rounded-2xl border border-slate-200 bg-white p-5">
-        <h2 class="text-lg font-bold text-slate-900">{{ t('novel.roleVoices') }}</h2>
-        <p class="mt-1 text-sm text-slate-500">{{ t('novel.roleHint') }}</p>
-        <div class="mt-4 grid gap-3 md:grid-cols-2">
-          <div v-for="role in novelRoles" :key="role" class="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 p-3">
-            <strong class="min-w-20 text-sm text-slate-800">{{ role }}</strong>
-            <select :value="activeNovel.roleTimbreIds[role] || ''" :disabled="batchRunning" class="min-w-40 flex-1 rounded-lg border border-slate-300 px-2 py-1.5 text-sm" @change="setRoleTimbre(role, $event)">
-              <option value="">{{ t('novel.unbound') }}</option>
-              <option v-if="activeNovel.roleTimbreIds[role] && !workspace.timbres.value.some(item => item.id === activeNovel.roleTimbreIds[role])" :value="activeNovel.roleTimbreIds[role]">{{ t('novel.missingTimbre') }}</option>
-              <option v-for="timbre in workspace.timbres.value" :key="timbre.id" :value="timbre.id">{{ timbre.name }}</option>
-            </select>
-            <button type="button" :disabled="batchRunning || !activeNovel.roleTimbreIds[role]" class="text-sm font-semibold text-blue-700 disabled:opacity-40" @click="syncRole(role)">{{ t('novel.applyAll') }}</button>
+              <p class="mt-2 text-sm text-slate-500">{{ numberedRows.length }} {{ t('novel.chapters') }} · {{ t('novel.analyzed') }} {{ analyzedCount }} · {{ t('novel.audioComplete') }} {{ voicedCount }} · {{ activeNovel.encoding }}</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <button type="button" :disabled="batchRunning" class="rounded-lg border border-slate-300 px-4 py-2 font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-40" @click="chooseFile">{{ t('novel.importAnother') }}</button>
+              <details ref="novelMenu" class="relative" :class="batchRunning ? 'pointer-events-none opacity-40' : ''" :aria-disabled="batchRunning">
+                <summary :aria-label="t('novel.manage')" class="flex h-10 w-10 cursor-pointer list-none items-center justify-center rounded-lg border border-slate-300 text-xl leading-none text-slate-600 hover:bg-slate-50">···</summary>
+                <div class="absolute right-0 z-30 mt-1 min-w-40 rounded-lg border border-slate-200 bg-white p-1 shadow-lg">
+                  <button type="button" :disabled="batchRunning" class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-40" @click="startNovelRename">{{ t('novel.rename') }}</button>
+                  <button type="button" :disabled="batchRunning" class="block w-full rounded-md px-3 py-2 text-left text-sm text-red-700 hover:bg-red-50 disabled:opacity-40" @click="deleteActiveNovel">{{ t('novel.delete') }}</button>
+                </div>
+              </details>
+            </div>
           </div>
         </div>
-      </div>
 
-      <div class="rounded-2xl border border-slate-200 bg-white p-5">
-        <div class="flex flex-wrap items-center justify-between gap-3">
-          <div><h2 class="text-lg font-bold text-slate-900">{{ t('novel.batchTts') }}</h2><p class="text-sm text-slate-500">{{ t('novel.ttsHint') }}</p></div>
-          <span v-if="ttsFailures" class="rounded-full bg-red-50 px-3 py-1 text-sm text-red-700">{{ t('novel.failed') }} {{ ttsFailures }}</span>
+        <div v-if="currentBatch?.running" role="status" class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+          <span>{{ t('novel.taskRunning', { phase: batchPhaseLabel(currentBatch.phase), title: activeNovel.title }) }} · {{ currentBatch.chapterTitle || '—' }} · {{ currentBatch.current }} / {{ currentBatch.total }}<span v-if="currentBatch.phase === 'tts' && currentBatch.chapterTotal"> · {{ t('novel.chapterLineProgress', { current: currentBatch.chapterCurrent, total: currentBatch.chapterTotal }) }}</span></span>
+          <button type="button" class="rounded-lg border border-red-300 px-3 py-1.5 font-medium text-red-700" @click="workspace.stopNovelBatch()">{{ t('novel.stopTask') }}</button>
         </div>
-        <div class="mt-4 flex flex-wrap gap-2">
-          <button type="button" :disabled="batchRunning" class="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white disabled:opacity-40" @click="runTts()">{{ t('novel.generateMissing') }}</button>
-          <button type="button" :disabled="batchRunning" class="rounded-lg border border-slate-300 px-4 py-2 disabled:opacity-40" @click="runTts(true)">{{ t('novel.retryTts') }}</button>
-          <button type="button" :disabled="batchRunning" class="rounded-lg border border-slate-300 px-4 py-2 disabled:opacity-40" @click="runTts(false, true)">{{ t('novel.regenerateAll') }}</button>
-        </div>
-      </div>
 
-      <div class="rounded-2xl border border-slate-200 bg-white p-5">
-        <h2 class="text-lg font-bold text-slate-900">{{ t('novel.batchExport') }}</h2>
-        <p class="mt-1 text-sm text-slate-500">{{ t('novel.exportHint') }}</p>
-        <p v-if="incompleteExport.length" class="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">{{ t('novel.incompleteChapters') }} ({{ incompleteExport.length }}): {{ incompleteExport.slice(0, 8).join('、') }}{{ incompleteExport.length > 8 ? '…' : '' }}</p>
-        <div class="mt-4 flex items-center gap-3">
-          <button type="button" :disabled="batchRunning || incompleteExport.length > 0 || !selectedIds.size" class="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white disabled:opacity-40" @click="exportSelected">{{ t('novel.exportZip') }}</button>
-          <span v-if="batchRunning && workspace.novelBatch.value.phase === 'export'" class="text-sm text-slate-500">{{ workspace.novelBatch.value.current }} / {{ workspace.novelBatch.value.total }}</span>
+        <div class="border-b border-slate-200">
+          <div class="flex gap-6">
+            <button type="button" class="border-b-2 px-1 py-3 text-sm font-semibold" :class="novelView === 'chapters' ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-600'" @click="novelView = 'chapters'">{{ t('novel.chaptersTab') }}</button>
+            <button type="button" class="border-b-2 px-1 py-3 text-sm font-semibold" :class="novelView === 'roles' ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-600'" @click="novelView = 'roles'">{{ t('novel.roleVoices') }}</button>
+          </div>
         </div>
-      </div>
 
-      <div class="rounded-2xl border border-slate-200 bg-white p-5">
-        <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <div><h2 class="text-lg font-bold text-slate-900">{{ t('novel.chapterList') }}</h2><p class="mt-1 text-xs text-slate-500">{{ t('novel.selectionAcrossPages') }}</p></div>
-          <div class="flex flex-wrap items-center gap-3">
-            <input v-model="search" type="search" :placeholder="t('novel.search')" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm sm:w-48">
-            <span class="whitespace-nowrap text-sm text-slate-500">{{ t('novel.selectedFraction', { selected: selectedIds.size, total: activeNovel.chapterIds.length }) }}</span>
+        <div v-show="novelView === 'chapters'" class="rounded-2xl border border-slate-200 bg-white p-4">
+          <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <div class="flex flex-wrap items-center gap-2">
+              <input v-model="search" type="search" :disabled="batchRunning" :placeholder="t('novel.search')" class="w-52 rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:opacity-40">
+              <label class="flex items-center gap-2 text-sm text-slate-600">{{ t('novel.status') }}
+                <select v-model="statusFilter" :disabled="batchRunning" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm disabled:opacity-40">
+                  <option value="all">{{ t('novel.statusAll') }}</option>
+                  <option value="analysisPending">{{ t('novel.pending') }}</option>
+                  <option value="analysisFailed">{{ t('novel.analysisFailed') }}</option>
+                  <option value="analyzed">{{ t('novel.analyzed') }}</option>
+                  <option value="audioPending">{{ t('novel.audioPending') }}</option>
+                  <option value="audioPartial">{{ t('novel.audioPartial') }}</option>
+                  <option value="audioComplete">{{ t('novel.audioComplete') }}</option>
+                  <option value="audioFailed">{{ t('novel.audioFailed') }}</option>
+                </select>
+              </label>
+            </div>
             <details ref="chapterSelectionMenu" class="relative" :class="batchRunning ? 'pointer-events-none opacity-40' : ''" :aria-disabled="batchRunning">
               <summary :aria-label="t('novel.selectionScope')" class="cursor-pointer list-none rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-50">{{ t('novel.selectionScope') }} ▾</summary>
-              <div class="absolute right-0 z-30 mt-1 min-w-36 rounded-lg border border-slate-200 bg-white p-1 shadow-lg">
-                <button type="button" :disabled="batchRunning" class="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-slate-50 disabled:opacity-40" @click="changeNovelSelection('result')">{{ t('novel.selectAllResults') }}</button>
-                <button type="button" :disabled="batchRunning" class="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-slate-50 disabled:opacity-40" @click="changeNovelSelection('clear')">{{ t('novel.clearSelection') }}</button>
+              <div class="absolute right-0 z-30 mt-1 w-64 rounded-lg border border-slate-200 bg-white p-2 text-sm shadow-lg">
+                <button type="button" :disabled="!filteredRows.length" class="block w-full rounded-md px-2 py-2 text-left hover:bg-slate-50 disabled:opacity-40" @click="changeNovelSelection('result')">{{ t('novel.selectAllResults') }}</button>
+                <form class="border-y border-slate-100 px-2 py-3" @submit.prevent="chooseChapterRange">
+                  <label class="block font-medium text-slate-700">{{ t('novel.selectByNumber') }}</label>
+                  <div class="mt-2 flex items-center gap-2">
+                    <input v-model.number="rangeStart" type="number" min="1" :max="numberedRows.length" :aria-label="t('novel.rangeStart')" class="w-20 rounded-md border border-slate-300 px-2 py-1">
+                    <span>–</span>
+                    <input v-model.number="rangeEnd" type="number" min="1" :max="numberedRows.length" :aria-label="t('novel.rangeEnd')" class="w-20 rounded-md border border-slate-300 px-2 py-1">
+                    <button type="submit" class="font-medium text-blue-700">{{ t('novel.apply') }}</button>
+                  </div>
+                  <p v-if="rangeError" role="alert" class="mt-2 text-xs text-red-700">{{ rangeError }}</p>
+                </form>
+                <button type="button" class="block w-full rounded-md px-2 py-2 text-left hover:bg-slate-50" @click="changeNovelSelection('clear')">{{ t('novel.clearSelection') }}</button>
+              </div>
+            </details>
+          </div>
+          <p v-if="selectionNotice" role="status" class="mb-3 text-sm text-amber-700">{{ selectionNotice }}</p>
+          <div class="max-h-[62vh] overflow-auto rounded-lg border border-slate-200">
+            <table class="w-full min-w-[740px] text-left text-sm">
+              <thead class="sticky top-0 z-10 bg-slate-50 text-slate-500">
+                <tr>
+                  <th class="p-3"><label class="flex items-center gap-2 whitespace-nowrap"><input type="checkbox" :checked="pageAllSelected" :indeterminate="pageSomeSelected && !pageAllSelected" :disabled="batchRunning || !visibleRows.length" @change="changeNovelSelection('page')">{{ t('novel.selectPage') }}</label></th>
+                  <th class="p-3">{{ t('novel.number') }}</th><th class="p-3">{{ t('novel.title') }}</th><th class="p-3">{{ t('novel.characters') }}</th>
+                  <th class="p-3">{{ t('novel.analysisColumn') }}</th><th class="p-3">{{ t('novel.audioColumn') }}</th><th class="p-3">{{ t('novel.action') }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in visibleRows" :key="row.id" class="border-t border-slate-100 hover:bg-blue-50/40" :class="selectedIds.has(row.id) ? 'bg-blue-50/60' : ''">
+                  <td class="p-3"><input type="checkbox" :checked="selectedIds.has(row.id)" :disabled="batchRunning" :aria-label="t('novel.select') + ' ' + row.script.name" @change="toggleChapter(row.id)"></td>
+                  <td class="p-3 text-slate-500">{{ row.number ?? '—' }}</td>
+                  <td class="p-3 font-medium text-slate-800">{{ row.number === null ? t('novel.intro') : row.script.name }}</td>
+                  <td class="p-3 text-slate-500">{{ row.script.data.rawScript.length }}</td>
+                  <td class="p-3" :title="row.script.data.analysisError || ''">
+                    <span :class="chapterProgress(row.script).analysis === 'failed' ? 'text-red-700' : chapterProgress(row.script).analysis === 'analyzed' ? 'text-green-700' : 'text-slate-500'">{{ chapterProgress(row.script).analysis === 'failed' ? t('novel.analysisFailed') : chapterProgress(row.script).analysis === 'analyzed' ? t('novel.analyzed') : t('novel.pending') }}</span>
+                  </td>
+                  <td class="p-3">
+                    <span v-if="chapterProgress(row.script).audio === 'none'" class="text-slate-400">—</span>
+                    <span v-else :class="chapterProgress(row.script).audio === 'complete' ? 'text-green-700' : 'text-slate-600'">{{ chapterProgress(row.script).audio === 'complete' ? t('novel.audioComplete') : chapterProgress(row.script).audio === 'pending' ? t('novel.audioPending') : t('novel.audioPartial') }} {{ chapterProgress(row.script).generated }}/{{ chapterProgress(row.script).total }}</span>
+                    <span v-if="chapterProgress(row.script).failed" class="ml-1 text-red-700">{{ t('novel.failedLines', { count: chapterProgress(row.script).failed }) }}</span>
+                  </td>
+                  <td class="p-3"><button type="button" class="font-semibold text-blue-700 hover:underline" @click="openChapter(row.id)">{{ t('novel.openChapter') }}</button></td>
+                </tr>
+                <tr v-if="!visibleRows.length"><td colspan="7" class="p-8 text-center text-slate-500">{{ t('novel.noMatchingChapters') }}</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="mt-3 flex flex-wrap items-center justify-between gap-3 text-sm text-slate-500">
+            <label class="flex items-center gap-2" for="novel-page-size">{{ t('novel.pageSize') }}
+              <select id="novel-page-size" v-model.number="pageSize" class="rounded-md border border-slate-300 bg-white px-2 py-1">
+                <option v-for="size in [20, 50, 100, 200]" :key="size" :value="size">{{ size }}</option>
+              </select>
+            </label>
+            <div class="flex items-center gap-3">
+              <button type="button" :disabled="page === 0" class="disabled:opacity-40" @click="page--">{{ t('novel.previous') }}</button>
+              <span>{{ page + 1 }} / {{ pageCount }}</span>
+              <button type="button" :disabled="page + 1 >= pageCount" class="disabled:opacity-40" @click="page++">{{ t('novel.next') }}</button>
+            </div>
+          </div>
+        </div>
+
+        <div v-show="novelView === 'chapters'" class="sticky bottom-2 z-20 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 shadow-lg">
+          <div class="flex items-center gap-3 text-sm">
+            <strong class="text-slate-800">{{ t('novel.selectedCountValue', { count: selectedIds.size }) }}</strong>
+            <button type="button" :disabled="!selectedIds.size || batchRunning" class="font-medium text-blue-700 disabled:opacity-40" @click="changeNovelSelection('clear')">{{ t('novel.clear') }}</button>
+            <span v-if="!selectedIds.size" class="text-slate-500">{{ t('novel.chooseToProcess') }}</span>
+            <span v-else-if="incompleteExport.length" class="text-amber-800">{{ t('novel.exportIncompleteCount', { count: incompleteExport.length }) }}</span>
+          </div>
+          <div v-if="!batchRunning" class="flex flex-wrap items-center gap-2">
+            <button type="button" :disabled="!selectedIds.size" class="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-40" @click="runAnalysis()">{{ t('novel.analyzeSelected') }}</button>
+            <button type="button" :disabled="!selectedIds.size" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-blue-700 disabled:opacity-40" @click="runTts()">{{ t('novel.generateMissing') }}</button>
+            <button type="button" :disabled="!selectedIds.size || incompleteExport.length > 0" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm disabled:opacity-40" @click="exportSelected">{{ t('novel.exportZip') }}</button>
+            <details ref="batchActionsMenu" class="relative">
+              <summary :aria-label="t('novel.moreActions')" class="cursor-pointer list-none rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">{{ t('novel.moreActions') }} ▾</summary>
+              <div class="absolute bottom-full right-0 z-30 mb-1 min-w-52 rounded-lg border border-slate-200 bg-white p-1 text-sm shadow-lg">
+                <button type="button" :disabled="!selectedIds.size || !selectedAnalysisFailures" class="block w-full rounded-md px-3 py-2 text-left hover:bg-slate-50 disabled:opacity-40" @click="runAnalysis(true)">{{ t('novel.retrySelectedAnalysis') }}</button>
+                <button type="button" :disabled="!selectedIds.size || !selectedTtsFailures" class="block w-full rounded-md px-3 py-2 text-left hover:bg-slate-50 disabled:opacity-40" @click="runTts(true)">{{ t('novel.retrySelectedAudio') }}</button>
+                <button type="button" :disabled="!selectedIds.size" class="block w-full rounded-md px-3 py-2 text-left hover:bg-slate-50 disabled:opacity-40" @click="runAnalysis(false, true)">{{ t('novel.rerunSelected') }}</button>
+                <button type="button" :disabled="!selectedIds.size" class="block w-full rounded-md px-3 py-2 text-left hover:bg-slate-50 disabled:opacity-40" @click="runTts(false, true)">{{ t('novel.regenerateAll') }}</button>
               </div>
             </details>
           </div>
         </div>
-        <div class="max-h-[58vh] overflow-auto rounded-lg border border-slate-200">
-          <table class="w-full min-w-[650px] text-left text-sm">
-            <thead class="sticky top-0 bg-slate-50 text-slate-500"><tr><th class="p-3"><label class="flex items-center gap-2 whitespace-nowrap"><input type="checkbox" :checked="pageAllSelected" :indeterminate="pageSomeSelected && !pageAllSelected" :disabled="batchRunning || !visibleRows.length" @change="changeNovelSelection('page')">{{ t('novel.selectPage') }}</label></th><th class="p-3">#</th><th class="p-3">{{ t('novel.title') }}</th><th class="p-3">{{ t('novel.characters') }}</th><th class="p-3">{{ t('novel.status') }}</th><th class="p-3">{{ t('novel.action') }}</th></tr></thead>
-            <tbody>
-              <tr v-for="row in visibleRows" :key="row.id" class="border-t border-slate-100 hover:bg-blue-50/40">
-                <td class="p-3"><input type="checkbox" :checked="selectedIds.has(row.id)" :disabled="batchRunning" :aria-label="`${t('novel.select')} ${row.script.name}`" @change="toggleChapter(row.id)"></td>
-                <td class="p-3 text-slate-500">{{ row.index + 1 }}</td>
-                <td class="p-3 font-medium text-slate-800">{{ row.script.name }}</td>
-                <td class="p-3 text-slate-500">{{ row.script.data.rawScript.length }}</td>
-                <td class="p-3 text-slate-500" :title="row.script.data.analysisError || row.script.data.scriptLines.find((line: any) => line.ttsError)?.ttsError || ''">{{ row.script.data.analysisError || row.script.data.scriptLines.some((line: any) => line.ttsError) ? t('novel.failed') : row.script.data.scriptLines.some((line: any) => line.type === 'dialogue' && line.audioAssetId) ? t('novel.voiced') : row.script.data.scriptLines.length ? t('novel.analyzed') : t('novel.pending') }}</td>
-                <td class="p-3"><button type="button" class="font-semibold text-blue-700 hover:underline" @click="openChapter(row.id)">{{ t('novel.editChapter') }}</button></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <div class="mt-3 flex flex-wrap items-center justify-between gap-3 text-sm text-slate-500">
-          <label class="flex items-center gap-2" for="novel-page-size">{{ t('novel.pageSize') }}
-            <select id="novel-page-size" v-model.number="pageSize" class="rounded-md border border-slate-300 bg-white px-2 py-1">
-              <option v-for="size in [20, 50, 100, 200]" :key="size" :value="size">{{ size }}</option>
-            </select>
-          </label>
-          <div class="flex items-center gap-3">
-          <button type="button" :disabled="page === 0" class="disabled:opacity-40" @click="page--">{{ t('novel.previous') }}</button>
-          <span>{{ page + 1 }} / {{ pageCount }}</span>
-          <button type="button" :disabled="page + 1 >= pageCount" class="disabled:opacity-40" @click="page++">{{ t('novel.next') }}</button>
+
+        <div v-show="novelView === 'roles'" class="rounded-2xl border border-slate-200 bg-white p-5">
+          <h2 class="text-lg font-bold text-slate-900">{{ t('novel.roleVoices') }}</h2>
+          <p class="mt-1 text-sm text-slate-500">{{ t('novel.roleHint') }}</p>
+          <p v-if="!novelRoles.length" class="mt-6 text-sm text-slate-500">{{ t('novel.noRoles') }}</p>
+          <div v-else class="mt-4 grid gap-3 md:grid-cols-2">
+            <div v-for="role in novelRoles" :key="role" class="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 p-3">
+              <strong class="min-w-20 text-sm text-slate-800">{{ role }}</strong>
+              <select :value="activeNovel.roleTimbreIds[role] || ''" :disabled="batchRunning" class="min-w-40 flex-1 rounded-lg border border-slate-300 px-2 py-1.5 text-sm" @change="setRoleTimbre(role, $event)">
+                <option value="">{{ t('novel.unbound') }}</option>
+                <option v-if="activeNovel.roleTimbreIds[role] && !workspace.timbres.value.some(item => item.id === activeNovel.roleTimbreIds[role])" :value="activeNovel.roleTimbreIds[role]">{{ t('novel.missingTimbre') }}</option>
+                <option v-for="timbre in workspace.timbres.value" :key="timbre.id" :value="timbre.id">{{ timbre.name }}</option>
+              </select>
+              <button type="button" :disabled="batchRunning || !activeNovel.roleTimbreIds[role]" class="text-sm font-semibold text-blue-700 disabled:opacity-40" @click="syncRole(role)">{{ t('novel.applyAll') }}</button>
+            </div>
           </div>
         </div>
       </div>

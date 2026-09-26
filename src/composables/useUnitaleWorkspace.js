@@ -215,7 +215,8 @@ export function useUnitaleWorkspace() {
                           data: { rawScript: '', scriptLines: [], rawAnalysisResult: '', characters: [] } }
                   ]));
                   const novels = ref(/** @type {any[]} */ ([]));
-                  const novelBatch = ref({ running: false, novelId: '', phase: '', current: 0, total: 0, failed: 0 });
+                  const novelBatch = ref({ running: false, novelId: '', phase: '', current: 0, total: 0, failed: 0,
+                      chapterTitle: '', chapterCurrent: 0, chapterTotal: 0 });
                   let novelBatchController = null;
                   const currentScriptId = ref('default');
                   const novelEditorId = ref(null);
@@ -2789,7 +2790,8 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       const projectId = activeProjectId.value;
                       const controller = new AbortController();
                       novelBatchController = controller;
-                      novelBatch.value = { running: true, novelId, phase: 'analysis', current: 0, total: scripts.length, failed: 0 };
+                      novelBatch.value = { running: true, novelId, phase: 'analysis', current: 0, total: scripts.length, failed: 0,
+                          chapterTitle: '', chapterCurrent: 0, chapterTotal: 0 };
                       activeScriptTasks++;
                       const copy = value => JSON.parse(JSON.stringify(value));
                       const options = {
@@ -2802,6 +2804,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       try {
                           for (const script of scripts) {
                               if (controller.signal.aborted || activeProjectId.value !== projectId) break;
+                              novelBatch.value.chapterTitle = script.name;
                               try {
                                   const result = await analyzeNovelChapter(script, options);
                                   if (controller.signal.aborted || activeProjectId.value !== projectId || !scriptList.value.includes(script)) break;
@@ -2851,7 +2854,11 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       const store = activeAssetStore;
                       const controller = new AbortController();
                       novelBatchController = controller;
-                      novelBatch.value = { running: true, novelId, phase: 'tts', current: 0, total: targets.length, failed: 0 };
+                      novelBatch.value = { running: true, novelId, phase: 'tts', current: 0, total: targets.length, failed: 0,
+                          chapterTitle: '', chapterCurrent: 0, chapterTotal: 0 };
+                      const chapterTotals = new Map();
+                      for (const { script } of targets) chapterTotals.set(script.id, (chapterTotals.get(script.id) || 0) + 1);
+                      const chapterDone = new Map();
                       activeScriptTasks++;
                       const copy = value => JSON.parse(JSON.stringify(value));
                       const emotions = copy(emotionPresets.value);
@@ -2860,6 +2867,9 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       try {
                           for (const { script, line } of targets) {
                               if (controller.signal.aborted || activeProjectId.value !== projectId || activeAssetStore !== store) break;
+                              novelBatch.value.chapterTitle = script.name;
+                              novelBatch.value.chapterTotal = chapterTotals.get(script.id) || 0;
+                              novelBatch.value.chapterCurrent = chapterDone.get(script.id) || 0;
                               try {
                                   const blob = await synthesizeNovelLine({ line, characters: script.data.characters,
                                       emotions, timbres: timbreSnapshot, config: copy(config), store, signal: controller.signal,
@@ -2886,6 +2896,8 @@ Write the generated narration, dialogue, character names, and image_prompt value
                               dirtyScriptIds.add(script.id);
                               await saveProjectToDB();
                               novelBatch.value.current++;
+                              novelBatch.value.chapterCurrent++;
+                              chapterDone.set(script.id, novelBatch.value.chapterCurrent);
                           }
                       } finally {
                           novelBatch.value.running = false;
@@ -2922,14 +2934,18 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       const controller = new AbortController();
                       const copy = value => JSON.parse(JSON.stringify(value));
                       novelBatchController = controller;
-                      novelBatch.value = { running: true, novelId, phase: 'export', current: 0, total: scripts.length, failed: 0 };
+                      novelBatch.value = { running: true, novelId, phase: 'export', current: 0, total: scripts.length, failed: 0,
+                          chapterTitle: scripts[0]?.name || '', chapterCurrent: 0, chapterTotal: 0 };
                       activeScriptTasks++;
                       try {
                           const blob = await exportNovelChaptersZip({ scripts: copy(scripts), store, cache: decodedCache,
                               libraries: { sfx: copy(sfxLibrary.value), bgm: copy(bgmLibrary.value), filters: copy(filterLibrary.value) },
                               decode: async media => audioContext.decodeAudioData(await media.arrayBuffer()),
                               signal: controller.signal, writer: writable || undefined,
-                              onProgress: current => { novelBatch.value.current = current; } });
+                              onProgress: current => {
+                                  novelBatch.value.current = current;
+                                  novelBatch.value.chapterTitle = scripts[current]?.name || scripts[current - 1]?.name || '';
+                              } });
                           if (!controller.signal.aborted && projectId === activeProjectId.value && store === activeAssetStore && blob) {
                               downloadArchivePart({ name: fileName, blob });
                           }
