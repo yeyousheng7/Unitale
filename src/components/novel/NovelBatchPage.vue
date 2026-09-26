@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useWorkspace } from '../../context/workspace'
 import { useI18n } from '../../i18n'
 import { isEmptyNovel } from '../../services/novel/novelImport'
+import { updateChapterSelection, type ChapterSelectionAction } from '../../services/novel/chapterSelection'
 import { parseTxtNovel, type ParsedTxtNovel } from '../../services/text/txtNovelParser'
 import { incompleteNovelChapters } from '../../services/novel/novelExport'
 import ScriptWorkspace from '../script/ScriptWorkspace.vue'
@@ -25,6 +26,10 @@ let parseGeneration = 0
 
 const activeNovelId = ref('')
 const activeNovel = computed(() => workspace.novels.value.find(novel => novel.id === activeNovelId.value) || workspace.novels.value[0])
+const novelTitleInput = ref<HTMLInputElement | null>(null)
+const novelMenu = ref<HTMLDetailsElement | null>(null)
+const chapterSelectionMenu = ref<HTMLDetailsElement | null>(null)
+const previewSelectionMenu = ref<HTMLDetailsElement | null>(null)
 const renamingNovelId = ref('')
 const novelTitleDraft = ref('')
 const search = ref('')
@@ -42,11 +47,18 @@ const filteredRows = computed(() => chapterRows.value.filter((row: any) =>
 const visibleRows = computed(() => filteredRows.value.slice(page.value * pageSize.value, (page.value + 1) * pageSize.value))
 const pageCount = computed(() => Math.max(1, Math.ceil(filteredRows.value.length / pageSize.value)))
 const selectedIds = computed(() => new Set<string>(activeNovel.value?.selectedChapterIds || []))
+const pageIds = computed<string[]>(() => visibleRows.value.map((row: { id: string }) => row.id))
+const pageAllSelected = computed(() => pageIds.value.length > 0 && pageIds.value.every(id => selectedIds.value.has(id)))
+const pageSomeSelected = computed(() => pageIds.value.some(id => selectedIds.value.has(id)))
 const previewChapter = computed(() => previewIndex.value === -1 ? parsed.value?.intro : parsed.value?.chapters[previewIndex.value])
 const previewPageCount = computed(() => Math.max(1, Math.ceil((parsed.value?.chapters.length || 0) / previewPageSize.value)))
 const visiblePreviewChapters = computed(() => (parsed.value?.chapters || [])
   .slice(previewPage.value * previewPageSize.value, (previewPage.value + 1) * previewPageSize.value)
   .map((chapter, offset) => ({ chapter, index: previewPage.value * previewPageSize.value + offset })))
+const previewPageIndexes = computed(() => visiblePreviewChapters.value.map(row => row.index))
+const previewPageAllSelected = computed(() => previewPageIndexes.value.length > 0 &&
+  previewPageIndexes.value.every(index => selectedIndexes.value.includes(index)))
+const previewPageSomeSelected = computed(() => previewPageIndexes.value.some(index => selectedIndexes.value.includes(index)))
 const editorChapter = computed(() => workspace.scriptList.value.find(script => script.id === workspace.novelEditorId.value))
 const editorVoiceChoices = computed(() => workspace.characters.value.flatMap((character: any) => {
   const timbre = workspace.timbres.value.find(item => item.refPath === character.voiceFile)
@@ -62,7 +74,16 @@ const novelRoles = computed<string[]>(() => [...new Set<string>(chapterRows.valu
 const batchRunning = computed(() => workspace.novelBatch.value.running)
 
 watch([search, activeNovelId, pageSize], () => { page.value = 0 })
+watch(activeNovelId, () => {
+  if (novelMenu.value) novelMenu.value.open = false
+  if (renamingNovelId.value && renamingNovelId.value !== activeNovelId.value) cancelNovelRename()
+})
 watch(previewPageSize, () => { previewPage.value = 0; previewIndex.value = parsed.value?.intro ? -1 : 0 })
+watch(batchRunning, running => {
+  if (!running) return
+  if (novelMenu.value) novelMenu.value.open = false
+  if (chapterSelectionMenu.value) chapterSelectionMenu.value.open = false
+})
 watch(() => workspace.novels.value.map(novel => novel.id).join(','), () => {
   if (!workspace.novels.value.some(novel => novel.id === activeNovelId.value)) {
     activeNovelId.value = workspace.novels.value[0]?.id || ''
@@ -105,18 +126,17 @@ function resetPreview() {
   file.value = null
   error.value = ''
   loading.value = false
+  if (previewSelectionMenu.value) previewSelectionMenu.value.open = false
 }
 function cancelPreview() {
   if (importing.value) return
   resetPreview()
 }
-function selectAllPreview() {
-  if (parsed.value) selectedIndexes.value = parsed.value.chapters.map((_, index) => index)
-}
-function invertPreviewSelection() {
-  if (!parsed.value) return
-  const current = new Set(selectedIndexes.value)
-  selectedIndexes.value = parsed.value.chapters.flatMap((_, index) => current.has(index) ? [] : [index])
+function changePreviewSelection(action: ChapterSelectionAction) {
+  if (!parsed.value || importing.value || loading.value) return
+  const indexes = parsed.value.chapters.map((_, index) => index)
+  selectedIndexes.value = updateChapterSelection(indexes, new Set(selectedIndexes.value), action, previewPageIndexes.value)
+  if (previewSelectionMenu.value) previewSelectionMenu.value.open = false
 }
 function changePreviewPage(next: number) {
   previewPage.value = Math.max(0, Math.min(previewPageCount.value - 1, next))
@@ -145,10 +165,19 @@ function toggleChapter(id: string) {
   else next.add(id)
   workspace.setNovelSelection(activeNovel.value.id, [...next])
 }
+function changeNovelSelection(action: ChapterSelectionAction) {
+  if (!activeNovel.value || batchRunning.value) return
+  const next = updateChapterSelection(activeNovel.value.chapterIds, selectedIds.value, action, pageIds.value)
+  workspace.setNovelSelection(activeNovel.value.id, next)
+  if (chapterSelectionMenu.value) chapterSelectionMenu.value.open = false
+}
+function closeNovelMenu() { if (novelMenu.value) novelMenu.value.open = false }
 function startNovelRename() {
   if (!activeNovel.value || batchRunning.value) return
+  closeNovelMenu()
   renamingNovelId.value = activeNovel.value.id
   novelTitleDraft.value = activeNovel.value.title
+  void nextTick(() => { novelTitleInput.value?.focus(); novelTitleInput.value?.select() })
 }
 function cancelNovelRename() { renamingNovelId.value = ''; novelTitleDraft.value = '' }
 function saveNovelRename() {
@@ -161,6 +190,7 @@ function saveNovelRename() {
 function deleteActiveNovel() {
   const novel = activeNovel.value
   if (!novel || batchRunning.value) return
+  closeNovelMenu()
   if (!window.confirm(t('novel.deleteConfirm', { name: novel.title, count: novel.chapterIds.length }))) return
   try {
     workspace.deleteNovel(novel.id)
@@ -215,9 +245,18 @@ function closeChapter() {
 function onKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape' && workspace.novelEditorId.value) { event.preventDefault(); closeChapter() }
 }
-onMounted(() => window.addEventListener('keydown', onKeydown))
+function onDocumentPointerDown(event: PointerEvent) {
+  for (const menu of [novelMenu.value, chapterSelectionMenu.value, previewSelectionMenu.value]) {
+    if (menu?.open && !menu.contains(event.target as Node)) menu.open = false
+  }
+}
+onMounted(() => {
+  window.addEventListener('keydown', onKeydown)
+  document.addEventListener('pointerdown', onDocumentPointerDown)
+})
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
+  document.removeEventListener('pointerdown', onDocumentPointerDown)
   if (workspace.novelEditorId.value) workspace.closeNovelChapter()
 })
 </script>
@@ -238,16 +277,21 @@ onBeforeUnmount(() => {
         <div class="flex flex-wrap items-center justify-between gap-4">
           <div class="flex flex-wrap items-center gap-2">
             <label class="mr-3 text-sm text-slate-500" for="novel-select">{{ t('novel.currentNovel') }}</label>
-            <input v-if="renamingNovelId === activeNovel.id" id="novel-select" v-model="novelTitleDraft" type="text" :aria-label="t('novel.rename')" class="rounded-lg border border-blue-400 bg-white px-3 py-2 font-semibold text-slate-800" @keydown.enter.stop.prevent="saveNovelRename" @keydown.esc.stop.prevent="cancelNovelRename" @blur="saveNovelRename">
+            <input v-if="renamingNovelId === activeNovel.id" id="novel-select" ref="novelTitleInput" v-model="novelTitleDraft" type="text" :aria-label="t('novel.rename')" class="rounded-lg border border-blue-400 bg-white px-3 py-2 font-semibold text-slate-800" @keydown.enter.stop.prevent="saveNovelRename" @keydown.esc.stop.prevent="cancelNovelRename" @blur="saveNovelRename">
             <select v-else id="novel-select" v-model="activeNovelId" class="rounded-lg border border-slate-300 bg-white px-3 py-2 font-semibold text-slate-800">
               <option v-for="novel in workspace.novels.value" :key="novel.id" :value="novel.id">{{ novel.title }}</option>
             </select>
+            <button v-if="renamingNovelId === activeNovel.id" type="button" class="rounded-lg border border-slate-300 px-3 py-2 text-sm" @click="saveNovelRename">{{ t('novel.saveName') }}</button>
+            <details v-else ref="novelMenu" class="relative" :class="batchRunning ? 'pointer-events-none opacity-40' : ''" :aria-disabled="batchRunning">
+              <summary :aria-label="t('novel.manage')" class="flex h-10 w-10 cursor-pointer list-none items-center justify-center rounded-lg border border-slate-300 text-xl leading-none text-slate-600 hover:bg-slate-50">···</summary>
+              <div class="absolute left-0 z-30 mt-1 min-w-40 rounded-lg border border-slate-200 bg-white p-1 shadow-lg">
+                <button type="button" :disabled="batchRunning" class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-40" @click="startNovelRename">{{ t('novel.rename') }}</button>
+                <button type="button" :disabled="batchRunning" class="block w-full rounded-md px-3 py-2 text-left text-sm text-red-700 hover:bg-red-50 disabled:opacity-40" @click="deleteActiveNovel">{{ t('novel.delete') }}</button>
+              </div>
+            </details>
             <span class="text-sm text-slate-500">{{ activeNovel.chapterIds.length }} {{ t('novel.chapters') }} · {{ activeNovel.encoding }}</span>
           </div>
           <div class="flex flex-wrap items-center gap-2">
-            <button v-if="renamingNovelId === activeNovel.id" type="button" class="rounded-lg border border-slate-300 px-3 py-2 text-sm" @click="saveNovelRename">{{ t('novel.saveName') }}</button>
-            <button v-else type="button" :disabled="batchRunning" class="rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:opacity-40" @click="startNovelRename">{{ t('novel.rename') }}</button>
-            <button type="button" :disabled="batchRunning" class="rounded-lg border border-red-200 px-3 py-2 text-sm text-red-700 disabled:opacity-40" @click="deleteActiveNovel">{{ t('novel.delete') }}</button>
             <button type="button" :disabled="batchRunning" class="rounded-lg border border-slate-300 px-4 py-2 font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-40" @click="chooseFile">{{ t('novel.importAnother') }}</button>
           </div>
         </div>
@@ -314,15 +358,26 @@ onBeforeUnmount(() => {
 
       <div class="rounded-2xl border border-slate-200 bg-white p-5">
         <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <h2 class="text-lg font-bold text-slate-900">{{ t('novel.chapterList') }}</h2>
-          <input v-model="search" type="search" :placeholder="t('novel.search')" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm sm:w-64">
+          <div><h2 class="text-lg font-bold text-slate-900">{{ t('novel.chapterList') }}</h2><p class="mt-1 text-xs text-slate-500">{{ t('novel.selectionAcrossPages') }}</p></div>
+          <div class="flex flex-wrap items-center gap-3">
+            <input v-model="search" type="search" :placeholder="t('novel.search')" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm sm:w-48">
+            <span class="whitespace-nowrap text-sm text-slate-500">{{ t('novel.selectedFraction', { selected: activeNovel.selectedChapterIds.length, total: activeNovel.chapterIds.length }) }}</span>
+            <details ref="chapterSelectionMenu" class="relative" :class="batchRunning ? 'pointer-events-none opacity-40' : ''" :aria-disabled="batchRunning">
+              <summary :aria-label="t('novel.selectionScope')" class="cursor-pointer list-none rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-50">{{ t('novel.selectionScope') }} ▾</summary>
+              <div class="absolute right-0 z-30 mt-1 min-w-36 rounded-lg border border-slate-200 bg-white p-1 shadow-lg">
+                <button type="button" :disabled="batchRunning" class="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-slate-50 disabled:opacity-40" @click="changeNovelSelection('all')">{{ t('novel.selectAllBook') }}</button>
+                <button type="button" :disabled="batchRunning" class="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-slate-50 disabled:opacity-40" @click="changeNovelSelection('invert')">{{ t('novel.invertBook') }}</button>
+                <button type="button" :disabled="batchRunning" class="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-slate-50 disabled:opacity-40" @click="changeNovelSelection('clear')">{{ t('novel.clearSelection') }}</button>
+              </div>
+            </details>
+          </div>
         </div>
         <div class="max-h-[58vh] overflow-auto rounded-lg border border-slate-200">
           <table class="w-full min-w-[650px] text-left text-sm">
-            <thead class="sticky top-0 bg-slate-50 text-slate-500"><tr><th class="p-3">{{ t('novel.select') }}</th><th class="p-3">#</th><th class="p-3">{{ t('novel.title') }}</th><th class="p-3">{{ t('novel.characters') }}</th><th class="p-3">{{ t('novel.status') }}</th><th class="p-3">{{ t('novel.action') }}</th></tr></thead>
+            <thead class="sticky top-0 bg-slate-50 text-slate-500"><tr><th class="p-3"><label class="flex items-center gap-2 whitespace-nowrap"><input type="checkbox" :checked="pageAllSelected" :indeterminate="pageSomeSelected && !pageAllSelected" :disabled="batchRunning || !visibleRows.length" @change="changeNovelSelection('page')">{{ t('novel.selectPage') }}</label></th><th class="p-3">#</th><th class="p-3">{{ t('novel.title') }}</th><th class="p-3">{{ t('novel.characters') }}</th><th class="p-3">{{ t('novel.status') }}</th><th class="p-3">{{ t('novel.action') }}</th></tr></thead>
             <tbody>
               <tr v-for="row in visibleRows" :key="row.id" class="border-t border-slate-100 hover:bg-blue-50/40">
-                <td class="p-3"><input type="checkbox" :checked="selectedIds.has(row.id)" :aria-label="`${t('novel.select')} ${row.script.name}`" @change="toggleChapter(row.id)"></td>
+                <td class="p-3"><input type="checkbox" :checked="selectedIds.has(row.id)" :disabled="batchRunning" :aria-label="`${t('novel.select')} ${row.script.name}`" @change="toggleChapter(row.id)"></td>
                 <td class="p-3 text-slate-500">{{ row.index + 1 }}</td>
                 <td class="p-3 font-medium text-slate-800">{{ row.script.name }}</td>
                 <td class="p-3 text-slate-500">{{ row.script.data.rawScript.length }}</td>
@@ -367,20 +422,34 @@ onBeforeUnmount(() => {
         <template v-if="parsed">
           <p v-if="isEmptyNovel(parsed)" class="mx-5 mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">{{ t('novel.emptyFile') }}</p>
           <p v-else-if="parsed.chapters.length === 1 && parsed.chapters[0]?.title === '正文'" class="mx-5 mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">{{ t('novel.singleChapter') }}</p>
+          <div v-if="parsed.intro" class="mx-5 mt-3 flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700">
+            <input v-model="includeIntro" type="checkbox" :disabled="importing || loading" :aria-label="t('novel.intro')"><button type="button" class="text-left" @click="previewIndex = -1">{{ t('novel.intro') }} · {{ parsed.intro.content.length }} {{ t('novel.characters') }}</button>
+          </div>
           <div class="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-hidden p-5 md:grid-cols-2">
             <div class="flex min-h-0 flex-col rounded-lg border border-slate-200">
-              <div class="flex flex-wrap items-center gap-2 border-b border-slate-200 p-2 text-sm">
-                <button type="button" class="rounded-md border border-slate-300 px-2 py-1 text-blue-700" @click="selectAllPreview">{{ t('novel.selectAll') }}</button>
-                <button type="button" class="rounded-md border border-slate-300 px-2 py-1 text-blue-700" @click="invertPreviewSelection">{{ t('novel.invertSelection') }}</button>
-                <span class="text-slate-500">{{ t('novel.selectedCount') }} {{ selectedIndexes.length }}</span>
+              <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 p-2 text-sm">
+                <strong class="text-slate-800">{{ t('novel.detectedChapters') }}</strong>
+                <div class="flex items-center gap-2">
+                  <span class="whitespace-nowrap text-slate-500">{{ t('novel.selectedFraction', { selected: selectedIndexes.length, total: parsed.chapters.length }) }}</span>
+                  <details ref="previewSelectionMenu" class="relative" :class="importing || loading ? 'pointer-events-none opacity-40' : ''" :aria-disabled="importing || loading">
+                    <summary :aria-label="t('novel.selectionScope')" class="cursor-pointer list-none rounded-md border border-slate-300 px-2 py-1 font-medium text-blue-700 hover:bg-blue-50">{{ t('novel.selectionScope') }} ▾</summary>
+                    <div class="absolute right-0 z-30 mt-1 min-w-36 rounded-lg border border-slate-200 bg-white p-1 shadow-lg">
+                      <button type="button" class="block w-full rounded-md px-3 py-2 text-left hover:bg-slate-50" @click="changePreviewSelection('all')">{{ t('novel.selectAllBook') }}</button>
+                      <button type="button" class="block w-full rounded-md px-3 py-2 text-left hover:bg-slate-50" @click="changePreviewSelection('invert')">{{ t('novel.invertBook') }}</button>
+                      <button type="button" class="block w-full rounded-md px-3 py-2 text-left hover:bg-slate-50" @click="changePreviewSelection('clear')">{{ t('novel.clearSelection') }}</button>
+                    </div>
+                  </details>
+                </div>
+              </div>
+              <div class="flex items-center gap-2 border-b border-slate-200 bg-slate-50 p-2 text-xs text-slate-500">
+                <label class="flex items-center gap-2 whitespace-nowrap"><input type="checkbox" :checked="previewPageAllSelected" :indeterminate="previewPageSomeSelected && !previewPageAllSelected" :disabled="importing || loading || !visiblePreviewChapters.length" @change="changePreviewSelection('page')">{{ t('novel.selectPage') }}</label>
+                <span class="ml-3">#</span><span>{{ t('novel.title') }}</span>
               </div>
               <div class="min-h-0 flex-1 overflow-auto">
-                <div v-if="parsed.intro" class="flex items-center gap-2 border-b border-slate-100 p-3">
-                  <input v-model="includeIntro" type="checkbox" :aria-label="t('novel.intro')"><button type="button" class="flex-1 text-left" @click="previewIndex = -1">{{ t('novel.intro') }} · {{ parsed.intro.content.length }} {{ t('novel.characters') }}</button>
-                </div>
                 <div v-for="row in visiblePreviewChapters" :key="row.index" class="flex items-center gap-2 border-b border-slate-100 p-3" :class="previewIndex === row.index ? 'bg-blue-50' : ''">
-                  <input type="checkbox" :checked="selectedIndexes.includes(row.index)" :aria-label="`${t('novel.select')} ${row.chapter.title}`" @change="togglePreviewIndex(row.index)">
-                  <button type="button" class="flex-1 text-left" @click="previewIndex = row.index">{{ row.chapter.title }} <span class="text-slate-400">· {{ row.chapter.content.length }} {{ t('novel.characters') }}</span></button>
+                  <input type="checkbox" :checked="selectedIndexes.includes(row.index)" :disabled="importing || loading" :aria-label="`${t('novel.select')} ${row.chapter.title}`" @change="togglePreviewIndex(row.index)">
+                  <span class="w-6 shrink-0 text-right text-xs text-slate-400">{{ row.index + 1 }}</span>
+                  <button type="button" class="min-w-0 flex-1 truncate text-left" @click="previewIndex = row.index">{{ row.chapter.title }} <span class="text-slate-400">· {{ row.chapter.content.length }} {{ t('novel.characters') }}</span></button>
                 </div>
               </div>
               <div class="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 p-2 text-sm text-slate-500">
