@@ -496,8 +496,8 @@ onBeforeUnmount(() => {
               <span v-if="selectedProgress.retainedAnalysisFailures" class="text-amber-800">{{ t('novel.retainedAnalysisFailure', { count: selectedProgress.retainedAnalysisFailures }) }}</span>
             </div>
             <div v-if="selectedIds.size" class="flex flex-wrap items-center gap-2">
-              <button v-if="selectedProgress.stage === 'analysis'" type="button" class="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white" @click="runAnalysis()">{{ t('novel.analyzeUnanalyzed', { count: selectedProgress.unanalyzed }) }}</button>
-              <button v-else-if="selectedProgress.stage === 'tts'" type="button" class="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white" @click="runTts()">{{ t('novel.generateMissing') }}</button>
+              <button v-if="selectedProgress.stage === 'analysis'" type="button" class="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white" @click="runAnalysis()">{{ t('novel.analyzeChapters') }}</button>
+              <button v-else-if="selectedProgress.stage === 'tts'" type="button" class="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white" @click="runTts()">{{ t('novel.generateAudio') }}</button>
               <button v-else-if="selectedProgress.stage === 'export'" type="button" :disabled="incompleteExport.length > 0" class="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-40" @click="exportSelected">{{ t('novel.exportZip') }}</button>
               <details ref="batchActionsMenu" class="relative">
                 <summary :aria-label="t('novel.moreActions')" class="cursor-pointer list-none rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">{{ t('novel.moreActions') }} ▾</summary>
@@ -586,8 +586,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </template>
-        <footer class="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 p-5">
-          <span class="text-sm text-slate-500">{{ t('novel.importAllHint') }}</span>
+        <footer class="flex flex-wrap items-center justify-end gap-3 border-t border-slate-200 p-5">
           <div class="flex gap-3"><button type="button" :disabled="importing" class="rounded-lg border border-slate-300 px-4 py-2" @click="cancelPreview">{{ t('novel.cancel') }}</button><button type="button" :disabled="!parsed || loading || importing || isEmptyNovel(parsed)" class="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white disabled:opacity-40" @click="confirmImport">{{ importing ? t('novel.importing') : t('novel.importWhole') }}</button></div>
         </footer>
       </div>
@@ -597,7 +596,7 @@ onBeforeUnmount(() => {
       <div class="rounded-2xl border border-slate-200 bg-white px-5 py-4">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="flex min-w-0 flex-wrap items-center gap-3">
-            <button type="button" class="font-medium text-blue-700" @click="closeChapter">← {{ t('novel.backToChapters') }}</button>
+            <button type="button" class="inline-flex items-center gap-1.5 font-medium text-blue-700" :aria-label="t('novel.backToChapters')" @click="closeChapter"><svg class="h-4 w-4" aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#arrow-left"></use></svg>{{ t('novel.chapterList') }}</button>
             <span class="text-slate-300">/</span><span class="text-sm text-slate-500">{{ activeNovel.title }}</span>
             <input v-if="editingChapterTitle" ref="chapterTitleInput" v-model="chapterTitleDraft" type="text" :aria-label="t('novel.chapterTitle')" class="min-w-48 rounded-lg border border-blue-400 px-2 py-1 font-semibold" @keydown.enter.stop.prevent="saveChapterRename" @keydown.esc.stop.prevent="cancelChapterRename" @blur="saveChapterRename">
             <strong v-else class="min-w-0 text-slate-900">{{ editorChapter?.name }}</strong>
