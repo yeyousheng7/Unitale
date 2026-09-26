@@ -30,11 +30,12 @@ export interface NovelDocument {
   title: string
   sourceFileName: string
   encoding: string
-  /** All chapters in source order, including chapters excluded from the current batch. */
+  /** All scripts in source order, including optional front matter. */
   chapterIds: string[]
   /** Script ID of the source text before chapter one, when present. */
   introScriptId?: string
-  selectedChapterIds: string[]
+  /** Legacy saved selection; current processing scope is transient and passed to batch actions. */
+  selectedChapterIds?: string[]
   /** Role name -> project timbre library entry ID. */
   roleTimbreIds: Record<string, string>
 }

@@ -207,11 +207,11 @@ test('novel import commits all chapters and floating edit restores the standalon
     const novelId = await w.commitNovelImport('book.txt', {
       encoding: 'utf-8', intro: null,
       chapters: [{ title: '第一章', content: '内容一。' }, { title: '第二章', content: '内容二。' }],
-    }, [0], false)
+    })
     const stored = await loadWorkspaceProject(projectId)
     const novel = stored.novels.find(item => item.id === novelId)
     assert.equal(novel.chapterIds.length, 2)
-    assert.deepEqual(novel.selectedChapterIds, [novel.chapterIds[0]])
+    assert.deepEqual(novel.selectedChapterIds, [])
     assert.equal(stored.scriptList.find(item => item.id === novel.chapterIds[1]).data.rawScript, '内容二。')
     assert.equal(stored.currentScriptId, 'default')
     assert.equal(w.openNovelChapter(novel.chapterIds[0]), true)
@@ -228,7 +228,7 @@ test('novel import commits all chapters and floating edit restores the standalon
     assert.equal(w.currentScriptId.value, 'default')
     assert.equal(w.novelEditorId.value, null)
     const unselectedId = await w.commitNovelImport('titles.txt', { encoding: 'utf-8', intro: null,
-      chapters: [{ title: '第一章', content: '' }] }, [], false)
+      chapters: [{ title: '第一章', content: '' }] })
     assert.deepEqual(w.novels.value.find(item => item.id === unselectedId).selectedChapterIds, [])
   } finally { unmount() }
 })
@@ -241,8 +241,8 @@ test('novel voice mapping updates inactive chapters and persists without affecti
   try {
     await sleep(550)
     const parsed = { encoding: 'utf-8', intro: null, chapters: [{ title: '第一章', content: '甲' }, { title: '第二章', content: '乙' }] }
-    const firstId = await w.commitNovelImport('one.txt', parsed, [0, 1], false)
-    const secondId = await w.commitNovelImport('two.txt', parsed, [0, 1], false)
+    const firstId = await w.commitNovelImport('one.txt', parsed)
+    const secondId = await w.commitNovelImport('two.txt', parsed)
     const first = w.novels.value.find(item => item.id === firstId)
     const second = w.novels.value.find(item => item.id === secondId)
     for (const id of [...first.chapterIds, ...second.chapterIds]) {
@@ -291,7 +291,7 @@ test('novel TTS stops after completed lines and restores saved audio on refresh'
   try {
     await sleep(550)
     const novelId = await w.commitNovelImport('voice.txt', { encoding: 'utf-8', intro: null,
-      chapters: [{ title: '第一章', content: '甲说了两句。' }] }, [0], false)
+      chapters: [{ title: '第一章', content: '甲说了两句。' }] })
     const chapterId = w.novels.value.find(item => item.id === novelId).chapterIds[0]
     assert.equal(w.openNovelChapter(chapterId), true)
     w.characters.value = [{ id: 'speaker', name: '甲', voiceFile: '/server/voice.wav', voiceAssetId: '' }]
@@ -311,7 +311,7 @@ test('novel TTS stops after completed lines and restores saved audio on refresh'
       if (calls === 2) { secondEntered.resolve(); await releaseSecond.promise }
       return new Response(new Blob([`audio-${calls}`], { type: 'audio/wav' }), { status: 200 })
     }
-    const batch = w.generateNovelBatch(novelId)
+    const batch = w.generateNovelBatch(novelId, [chapterId])
     await within(secondEntered.promise, 'second chapter line')
     assert.equal(w.currentScriptId.value, 'default')
     w.stopNovelBatch()
@@ -319,6 +319,7 @@ test('novel TTS stops after completed lines and restores saved audio on refresh'
     await batch
     const stored = await loadWorkspaceProject(projectId)
     const lines = stored.scriptList.find(item => item.id === chapterId).data.scriptLines
+    assert.deepEqual(stored.novels.find(item => item.id === novelId).selectedChapterIds, [])
     assert.ok(lines[0].audioAssetId)
     assert.equal(lines[1].audioAssetId, undefined)
     assert.equal(await (await indexedDbAssetStore.get(lines[0].audioAssetId)).text(), 'audio-1')
@@ -334,7 +335,7 @@ test('novel analysis retries failed chapters and saves book voices without switc
   try {
     await sleep(550)
     const novelId = await w.commitNovelImport('analysis.txt', { encoding: 'utf-8', intro: null,
-      chapters: [{ title: '第一章', content: '林夏走进房间。' }, { title: '第二章', content: '未选择。' }] }, [0], false)
+      chapters: [{ title: '第一章', content: '林夏走进房间。' }, { title: '第二章', content: '未选择。' }] })
     const chapterIds = w.novels.value.find(item => item.id === novelId).chapterIds
     w.timbres.value.push({ id: 'voice-lin', name: '女声', refPath: '/server/lin.wav', assetId: 'voice-asset' })
     w.setNovelRoleTimbre(novelId, '林夏', 'voice-lin')
@@ -348,11 +349,12 @@ test('novel analysis retries failed chapters and saves book voices without switc
         { type: 'dialogue', role_name: '林夏', text_content: '我来了。' },
       ]) } }] })
     }
-    await w.analyzeNovelBatch(novelId)
+    await w.analyzeNovelBatch(novelId, [chapterIds[0]])
     assert.equal(w.currentScriptId.value, 'default')
     assert.equal((await loadWorkspaceProject(projectId)).scriptList.find(item => item.id === chapterIds[0]).data.analysisError, 'HTTP 500')
-    await w.analyzeNovelBatch(novelId, { failedOnly: true })
+    await w.analyzeNovelBatch(novelId, [chapterIds[0]], { failedOnly: true })
     const stored = await loadWorkspaceProject(projectId)
+    assert.deepEqual(stored.novels.find(item => item.id === novelId).selectedChapterIds, [])
     assert.equal(calls, 2)
     assert.equal(stored.scriptList.find(item => item.id === chapterIds[0]).data.scriptLines[0].text, '我来了。')
     assert.equal(stored.scriptList.find(item => item.id === chapterIds[0]).data.characters[0].voiceFile, '/server/lin.wav')
@@ -370,8 +372,8 @@ test('novel rename and deletion persist while retaining another novel and shared
   try {
     await sleep(550)
     const parsed = { encoding: 'utf-8', intro: null, chapters: [{ title: '第一章', content: '正文。' }] }
-    const firstId = await w.commitNovelImport('first.txt', parsed, [0], false)
-    const secondId = await w.commitNovelImport('second.txt', parsed, [0], false)
+    const firstId = await w.commitNovelImport('first.txt', parsed)
+    const secondId = await w.commitNovelImport('second.txt', parsed)
     const firstChapter = w.novels.value.find(item => item.id === firstId).chapterIds[0]
     const secondChapter = w.novels.value.find(item => item.id === secondId).chapterIds[0]
     assert.equal(w.openNovelChapter(firstChapter), true)

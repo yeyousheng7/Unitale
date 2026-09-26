@@ -11,32 +11,25 @@ export function isEmptyNovel(result: ParsedTxtNovel): boolean {
     result.chapters[0]?.title === '正文' && !result.chapters[0]?.content.trim()
 }
 
-/** Builds complete chapter records; selection controls processing, not retention. */
-export function buildNovelImport(
-  fileName: string,
-  result: ParsedTxtNovel,
-  selectedChapterIndexes: ReadonlySet<number>,
-  includeIntro = false,
-): NovelImportDraft {
+/** Builds every chapter and front matter record without choosing a processing range. */
+export function buildNovelImport(fileName: string, result: ParsedTxtNovel): NovelImportDraft {
   if (isEmptyNovel(result)) throw new Error('TXT file has no content')
   const novelId = crypto.randomUUID()
   const scripts: ScriptDocument[] = []
-  const selectedChapterIds: string[] = []
-  const append = (chapter: TxtChapter, selected: boolean) => {
+  const append = (chapter: TxtChapter) => {
     const script: ScriptDocument = {
       id: crypto.randomUUID(), kind: 'novelChapter', novelId, name: chapter.title,
       data: { rawScript: chapter.content, rawAnalysisResult: '', scriptLines: [], characters: [] },
     }
     scripts.push(script)
-    if (selected) selectedChapterIds.push(script.id)
   }
-  if (result.intro) append(result.intro, includeIntro)
+  if (result.intro) append(result.intro)
   const introScriptId = result.intro ? scripts[0]!.id : undefined
-  result.chapters.forEach((chapter, index) => append(chapter, selectedChapterIndexes.has(index)))
+  result.chapters.forEach(append)
   const title = fileName.replace(/\.txt$/i, '').trim() || '未命名小说'
   return {
     novel: { id: novelId, title, sourceFileName: fileName, encoding: result.encoding,
-      chapterIds: scripts.map(script => script.id), introScriptId, selectedChapterIds, roleTimbreIds: {} },
+      chapterIds: scripts.map(script => script.id), introScriptId, selectedChapterIds: [], roleTimbreIds: {} },
     scripts,
   }
 }

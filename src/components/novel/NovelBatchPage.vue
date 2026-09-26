@@ -34,6 +34,7 @@ const novelTitleDraft = ref('')
 const search = ref('')
 const page = ref(0)
 const pageSize = ref(50)
+const selectionByNovel = ref<Record<string, string[]>>({})
 const chapterRows = computed(() => {
   const novel = activeNovel.value
   if (!novel) return []
@@ -45,7 +46,7 @@ const filteredRows = computed(() => chapterRows.value.filter((row: any) =>
   row.script.name.toLowerCase().includes(search.value.trim().toLowerCase())))
 const visibleRows = computed(() => filteredRows.value.slice(page.value * pageSize.value, (page.value + 1) * pageSize.value))
 const pageCount = computed(() => Math.max(1, Math.ceil(filteredRows.value.length / pageSize.value)))
-const selectedIds = computed(() => new Set<string>(activeNovel.value?.selectedChapterIds || []))
+const selectedIds = computed(() => new Set<string>(selectionByNovel.value[activeNovel.value?.id || ''] || []))
 const pageIds = computed<string[]>(() => visibleRows.value.map((row: { id: string }) => row.id))
 const pageAllSelected = computed(() => pageIds.value.length > 0 && pageIds.value.every(id => selectedIds.value.has(id)))
 const pageSomeSelected = computed(() => pageIds.value.some(id => selectedIds.value.has(id)))
@@ -140,7 +141,7 @@ async function confirmImport() {
   importing.value = true
   error.value = ''
   try {
-    const id = await workspace.commitNovelImport(file.value.name, parsed.value, [], false)
+    const id = await workspace.commitNovelImport(file.value.name, parsed.value)
     activeNovelId.value = id
     importNotice.value = t('novel.importedNotice', { count: parsed.value.chapters.length })
     resetPreview()
@@ -148,16 +149,16 @@ async function confirmImport() {
   finally { importing.value = false }
 }
 function toggleChapter(id: string) {
-  if (!activeNovel.value) return
-  const next = new Set<string>(activeNovel.value.selectedChapterIds)
+  if (!activeNovel.value || batchRunning.value) return
+  const next = new Set<string>(selectedIds.value)
   if (next.has(id)) next.delete(id)
   else next.add(id)
-  workspace.setNovelSelection(activeNovel.value.id, [...next])
+  selectionByNovel.value[activeNovel.value.id] = activeNovel.value.chapterIds.filter((chapterId: string) => next.has(chapterId))
 }
 function changeNovelSelection(action: ChapterSelectionAction) {
   if (!activeNovel.value || batchRunning.value) return
-  const next = updateChapterSelection(activeNovel.value.chapterIds, selectedIds.value, action, pageIds.value)
-  workspace.setNovelSelection(activeNovel.value.id, next)
+  const scope = action === 'result' ? filteredRows.value.map((row: { id: string }) => row.id) : pageIds.value
+  selectionByNovel.value[activeNovel.value.id] = updateChapterSelection(activeNovel.value.chapterIds, selectedIds.value, action, scope)
   if (chapterSelectionMenu.value) chapterSelectionMenu.value.open = false
 }
 function closeNovelMenu() { if (novelMenu.value) novelMenu.value.open = false }
@@ -192,20 +193,20 @@ async function runAnalysis(failedOnly = false, rerun = false) {
   if (!activeNovel.value) return
   if (rerun && !window.confirm(t('novel.rerunConfirm'))) return
   error.value = ''
-  try { await workspace.analyzeNovelBatch(activeNovel.value.id, { failedOnly, rerun }) }
+  try { await workspace.analyzeNovelBatch(activeNovel.value.id, [...selectedIds.value], { failedOnly, rerun }) }
   catch (cause) { error.value = String(cause) }
 }
 async function runTts(failedOnly = false, rerun = false) {
   if (!activeNovel.value) return
   if (rerun && !window.confirm(t('novel.regenerateConfirm'))) return
   error.value = ''
-  try { await workspace.generateNovelBatch(activeNovel.value.id, { failedOnly, rerun }) }
+  try { await workspace.generateNovelBatch(activeNovel.value.id, [...selectedIds.value], { failedOnly, rerun }) }
   catch (cause) { error.value = String(cause) }
 }
 async function exportSelected() {
   if (!activeNovel.value) return
   error.value = ''
-  try { await workspace.exportNovelBatch(activeNovel.value.id) }
+  try { await workspace.exportNovelBatch(activeNovel.value.id, [...selectedIds.value]) }
   catch (cause) { error.value = String(cause) }
 }
 function setRoleTimbre(role: string, event: Event, overwrite = false) {
@@ -285,12 +286,12 @@ onBeforeUnmount(() => {
             <button type="button" :disabled="batchRunning" class="rounded-lg border border-slate-300 px-4 py-2 font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-40" @click="chooseFile">{{ t('novel.importAnother') }}</button>
           </div>
         </div>
-        <p class="mt-3 text-sm text-slate-500">{{ activeNovel.sourceFileName }} · {{ t('novel.selectedCount') }} {{ activeNovel.selectedChapterIds.length }}</p>
+        <p class="mt-3 text-sm text-slate-500">{{ activeNovel.sourceFileName }} · {{ t('novel.selectedCount') }} {{ selectedIds.size }}</p>
       </div>
 
       <div class="grid gap-4 sm:grid-cols-3">
         <div class="rounded-xl border border-slate-200 bg-white p-4"><span class="text-sm text-slate-500">{{ t('novel.total') }}</span><strong class="mt-1 block text-2xl text-slate-900">{{ chapterRows.length }}</strong></div>
-        <div class="rounded-xl border border-slate-200 bg-white p-4"><span class="text-sm text-slate-500">{{ t('novel.selectedCount') }}</span><strong class="mt-1 block text-2xl text-slate-900">{{ activeNovel.selectedChapterIds.length }}</strong></div>
+        <div class="rounded-xl border border-slate-200 bg-white p-4"><span class="text-sm text-slate-500">{{ t('novel.selectedCount') }}</span><strong class="mt-1 block text-2xl text-slate-900">{{ selectedIds.size }}</strong></div>
         <div class="rounded-xl border border-slate-200 bg-white p-4"><span class="text-sm text-slate-500">{{ t('novel.analyzed') }}</span><strong class="mt-1 block text-2xl text-slate-900">{{ chapterRows.filter((row: any) => row.script.data.scriptLines?.length).length }}</strong></div>
       </div>
 
@@ -341,7 +342,7 @@ onBeforeUnmount(() => {
         <p class="mt-1 text-sm text-slate-500">{{ t('novel.exportHint') }}</p>
         <p v-if="incompleteExport.length" class="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">{{ t('novel.incompleteChapters') }} ({{ incompleteExport.length }}): {{ incompleteExport.slice(0, 8).join('、') }}{{ incompleteExport.length > 8 ? '…' : '' }}</p>
         <div class="mt-4 flex items-center gap-3">
-          <button type="button" :disabled="batchRunning || incompleteExport.length > 0 || !activeNovel.selectedChapterIds.length" class="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white disabled:opacity-40" @click="exportSelected">{{ t('novel.exportZip') }}</button>
+          <button type="button" :disabled="batchRunning || incompleteExport.length > 0 || !selectedIds.size" class="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white disabled:opacity-40" @click="exportSelected">{{ t('novel.exportZip') }}</button>
           <span v-if="batchRunning && workspace.novelBatch.value.phase === 'export'" class="text-sm text-slate-500">{{ workspace.novelBatch.value.current }} / {{ workspace.novelBatch.value.total }}</span>
         </div>
       </div>
@@ -351,12 +352,11 @@ onBeforeUnmount(() => {
           <div><h2 class="text-lg font-bold text-slate-900">{{ t('novel.chapterList') }}</h2><p class="mt-1 text-xs text-slate-500">{{ t('novel.selectionAcrossPages') }}</p></div>
           <div class="flex flex-wrap items-center gap-3">
             <input v-model="search" type="search" :placeholder="t('novel.search')" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm sm:w-48">
-            <span class="whitespace-nowrap text-sm text-slate-500">{{ t('novel.selectedFraction', { selected: activeNovel.selectedChapterIds.length, total: activeNovel.chapterIds.length }) }}</span>
+            <span class="whitespace-nowrap text-sm text-slate-500">{{ t('novel.selectedFraction', { selected: selectedIds.size, total: activeNovel.chapterIds.length }) }}</span>
             <details ref="chapterSelectionMenu" class="relative" :class="batchRunning ? 'pointer-events-none opacity-40' : ''" :aria-disabled="batchRunning">
               <summary :aria-label="t('novel.selectionScope')" class="cursor-pointer list-none rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-50">{{ t('novel.selectionScope') }} ▾</summary>
               <div class="absolute right-0 z-30 mt-1 min-w-36 rounded-lg border border-slate-200 bg-white p-1 shadow-lg">
-                <button type="button" :disabled="batchRunning" class="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-slate-50 disabled:opacity-40" @click="changeNovelSelection('all')">{{ t('novel.selectAllBook') }}</button>
-                <button type="button" :disabled="batchRunning" class="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-slate-50 disabled:opacity-40" @click="changeNovelSelection('invert')">{{ t('novel.invertBook') }}</button>
+                <button type="button" :disabled="batchRunning" class="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-slate-50 disabled:opacity-40" @click="changeNovelSelection('result')">{{ t('novel.selectAllResults') }}</button>
                 <button type="button" :disabled="batchRunning" class="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-slate-50 disabled:opacity-40" @click="changeNovelSelection('clear')">{{ t('novel.clearSelection') }}</button>
               </div>
             </details>

@@ -85,6 +85,7 @@ export const zhCN = {
   'novel.pageSize': '每页',
   'novel.selectionScope': '选择范围',
   'novel.selectAllBook': '全书全选',
+  'novel.selectAllResults': '全选当前结果',
   'novel.invertBook': '全书反选',
   'novel.clearSelection': '清空章节选择',
   'novel.selectPage': '选择本页',

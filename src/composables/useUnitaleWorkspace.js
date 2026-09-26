@@ -2680,9 +2680,9 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       importTxtRef.value.click();
                   };
 
-                  const commitNovelImport = async (fileName, parsed, selectedIndexes, includeIntro) => {
+                  const commitNovelImport = async (fileName, parsed) => {
                       if (hasActiveMediaTask() || novelEditorId.value) throw new Error(translateMessage('storage.busy'));
-                      const draft = buildNovelImport(fileName, parsed, new Set(selectedIndexes), includeIntro);
+                      const draft = buildNovelImport(fileName, parsed);
                       const projectId = activeProjectId.value;
                       const store = directoryStore;
                       activeScriptTasks++;
@@ -2708,15 +2708,6 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       } finally {
                           activeScriptTasks--;
                       }
-                  };
-
-                  const setNovelSelection = (novelId, selectedIds) => {
-                      if (novelBatch.value.running) return;
-                      const novel = novels.value.find(item => item.id === novelId);
-                      if (!novel) return;
-                      const valid = new Set(novel.chapterIds);
-                      novel.selectedChapterIds = [...new Set(selectedIds)].filter(id => valid.has(id));
-                      triggerAutoSave();
                   };
 
                   const renameNovel = (novelId, title) => {
@@ -2783,13 +2774,14 @@ Write the generated narration, dialogue, character names, and image_prompt value
 
                   const stopNovelBatch = () => novelBatchController?.abort();
 
-                  const analyzeNovelBatch = async (novelId, { failedOnly = false, rerun = false } = {}) => {
+                  const analyzeNovelBatch = async (novelId, chapterIds, { failedOnly = false, rerun = false } = {}) => {
                       if (hasActiveMediaTask() || novelEditorId.value) throw new Error(translateMessage('storage.busy'));
                       const novel = novels.value.find(item => item.id === novelId);
                       if (!novel) throw new Error('Novel not found');
                       const config = currentConfig.value;
                       if (!config) throw new Error('Select an LLM model first');
-                      const selected = new Set(novel.selectedChapterIds);
+                      const validIds = new Set(novel.chapterIds);
+                      const selected = new Set(chapterIds.filter(id => validIds.has(id)));
                       const scripts = novel.chapterIds.map(id => scriptList.value.find(script => script.id === id))
                           .filter(script => script && selected.has(script.id) && script.data.rawScript.trim() &&
                               (!failedOnly || script.data.analysisError) && (failedOnly || rerun || !script.data.scriptLines.length));
@@ -2837,13 +2829,14 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       }
                   };
 
-                  const generateNovelBatch = async (novelId, { failedOnly = false, rerun = false } = {}) => {
+                  const generateNovelBatch = async (novelId, chapterIds, { failedOnly = false, rerun = false } = {}) => {
                       if (hasActiveMediaTask() || novelEditorId.value) throw new Error(translateMessage('storage.busy'));
                       const novel = novels.value.find(item => item.id === novelId);
                       if (!novel) throw new Error('Novel not found');
                       const config = currentTtsConfig.value;
                       if (!config) throw new Error('Select a TTS service first');
-                      const selected = new Set(novel.selectedChapterIds);
+                      const validIds = new Set(novel.chapterIds);
+                      const selected = new Set(chapterIds.filter(id => validIds.has(id)));
                       const chapters = novel.chapterIds.map(id => scriptList.value.find(script => script.id === id))
                           .filter(script => script && selected.has(script.id) && script.data.scriptLines.length);
                       const targets = chapters.flatMap(script => script.data.scriptLines
@@ -2901,11 +2894,12 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       }
                   };
 
-                  const exportNovelBatch = async (novelId) => {
+                  const exportNovelBatch = async (novelId, chapterIds) => {
                       if (hasActiveMediaTask() || novelEditorId.value) throw new Error(translateMessage('storage.busy'));
                       const novel = novels.value.find(item => item.id === novelId);
                       if (!novel) throw new Error('Novel not found');
-                      const selected = new Set(novel.selectedChapterIds);
+                      const validIds = new Set(novel.chapterIds);
+                      const selected = new Set(chapterIds.filter(id => validIds.has(id)));
                       const scripts = novel.chapterIds.map(id => scriptList.value.find(script => script.id === id))
                           .filter(script => script && selected.has(script.id));
                       if (!scripts.length) throw new Error('Select chapters to export');
@@ -4436,7 +4430,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       lineRefs,
                       scriptListContainer,
                       scriptList, novels, currentScriptId, switchScript, addScript, deleteScriptTab,
-                      novelEditorId, novelBatch, commitNovelImport, setNovelSelection, renameNovel, deleteNovel,
+                      novelEditorId, novelBatch, commitNovelImport, renameNovel, deleteNovel,
                       setNovelRoleTimbre, navigateToTab,
                       analyzeNovelBatch, generateNovelBatch, exportNovelBatch, stopNovelBatch, openNovelChapter, closeNovelChapter,
                       editingScriptId, startEditingScript, stopEditingScript, scriptNameInputRefs,

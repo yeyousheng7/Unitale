@@ -87,6 +87,7 @@ export const enUS = {
   "novel.pageSize": "Per page",
   "novel.selectionScope": "Selection scope",
   "novel.selectAllBook": "Select entire novel",
+  "novel.selectAllResults": "Select all current results",
   "novel.invertBook": "Invert entire novel",
   "novel.clearSelection": "Clear chapter selection",
   "novel.selectPage": "Select this page",
