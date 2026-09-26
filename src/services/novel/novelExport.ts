@@ -166,7 +166,13 @@ export async function exportNovelChaptersZip(options: {
             Math.min(1, Number(item.trimEnd ?? 1)))
           const loopLength = Math.max(0.01, source.loopEnd - source.loopStart)
           const gain = ctx.createGain()
-          gain.gain.value = segment.volume * Number(item.volume ?? 1)
+          const volume = segment.volume * Number(item.volume ?? 1)
+          const envelope = (at: number) => volume * Math.max(0, Math.min(1, (at - segment.start) / 2, (segment.end - at) / 2))
+          gain.gain.setValueAtTime(envelope(overlap), overlap - start)
+          for (const knot of [segment.start + 2, segment.end - 2, stop]
+            .filter(at => at > overlap && at <= stop).sort((a, b) => a - b)) {
+            gain.gain.linearRampToValueAtTime(envelope(knot), knot - start)
+          }
           source.connect(gain).connect(ctx.destination)
           source.start(overlap - start, source.loopStart + (overlap - segment.start) % loopLength)
           source.stop(stop - start)

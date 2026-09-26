@@ -16,7 +16,7 @@ export function missingNovelVoices(lines: ReadonlyArray<ScriptLine>, characters:
 /** Synthesizes one line using explicit chapter state; the caller owns the resulting Blob. */
 export async function synthesizeNovelLine(options: {
   line: ScriptLine; characters: Character[]; emotions: Emotion[]; timbres: Timbre[]
-  config: { baseUrl: string }; store: AssetStore; signal: AbortSignal
+  config: { baseUrl: string }; store: AssetStore; signal: AbortSignal; availableVoicePaths?: Set<string>
 }): Promise<Blob> {
   const { line, characters, emotions, timbres, config, store, signal } = options
   const role = String(line.role || '')
@@ -31,7 +31,7 @@ export async function synthesizeNovelLine(options: {
   if (selected) char.voiceAssetId = selected.assetId || ''
   let baseUrl = config.baseUrl.trim().replace(/\/+$/, '')
   if (baseUrl.endsWith('/v1')) baseUrl = baseUrl.slice(0, -3)
-  if (typeof char.voiceAssetId === 'string' && char.voiceAssetId) {
+  if (typeof char.voiceAssetId === 'string' && char.voiceAssetId && !options.availableVoicePaths?.has(voicePath(char.voiceFile))) {
     const voiceBlob = await store.get(char.voiceAssetId)
     if (voiceBlob) {
       const check = await requestService(`${baseUrl}/v1/check/audio?file_name=${encodeURIComponent(voicePath(char.voiceFile))}`, { signal })
@@ -43,6 +43,7 @@ export async function synthesizeNovelLine(options: {
         const upload = await requestService(`${baseUrl}/v1/upload_audio`, { method: 'POST', body: form, signal })
         if (!upload.ok) throw new Error(`音色上传失败: HTTP ${upload.status}`)
       }
+      options.availableVoicePaths?.add(voicePath(char.voiceFile))
     }
   }
   const response = await requestService(`${baseUrl}/v2/synthesize`, {

@@ -222,6 +222,13 @@ test('novel import commits all chapters and floating edit restores the standalon
     const afterEdit = await loadWorkspaceProject(projectId)
     assert.equal(afterEdit.currentScriptId, 'default')
     assert.equal(afterEdit.scriptList.find(item => item.id === novel.chapterIds[0]).data.rawScript, '已修改的内容。')
+    assert.equal(w.openNovelChapter(novel.chapterIds[1]), true)
+    assert.equal(w.navigateToTab('script'), true)
+    assert.equal(w.currentScriptId.value, 'default')
+    assert.equal(w.novelEditorId.value, null)
+    const unselectedId = await w.commitNovelImport('titles.txt', { encoding: 'utf-8', intro: null,
+      chapters: [{ title: '第一章', content: '' }] }, [], false)
+    assert.deepEqual(w.novels.value.find(item => item.id === unselectedId).selectedChapterIds, [])
   } finally { unmount() }
 })
 
@@ -243,14 +250,34 @@ test('novel voice mapping updates inactive chapters and persists without affecti
         voiceFile: id === first.chapterIds[1] ? '/local/override.wav' : '', voiceAssetId: '' }]
       assert.equal(w.closeNovelChapter(), true)
     }
-    w.timbres.value.push({ id: 'shared-voice', name: '男声', refPath: '/server/shared.wav', assetId: 'asset-voice' })
+    const originalVoice = await indexedDbAssetStore.put(new Blob(['old voice']), { projectId, kind: 'voice' })
+    w.timbres.value.push({ id: 'shared-voice', name: '男声', refPath: '/server/shared.wav', assetId: originalVoice.id })
+    assert.equal(w.openNovelChapter(first.chapterIds[0]), true)
     w.setNovelRoleTimbre(firstId, ' 小明 ', 'shared-voice')
+    assert.equal(w.closeNovelChapter(), true)
     await sleep(1150)
     const stored = await loadWorkspaceProject(projectId)
     assert.equal(stored.novels.find(item => item.id === firstId).roleTimbreIds['小明'], 'shared-voice')
     assert.equal(stored.scriptList.find(item => item.id === first.chapterIds[0]).data.characters[0].voiceFile, '/server/shared.wav')
     assert.equal(stored.scriptList.find(item => item.id === first.chapterIds[1]).data.characters[0].voiceFile, '/local/override.wav')
     assert.equal(stored.scriptList.find(item => item.id === second.chapterIds[0]).data.characters[0].voiceFile, '')
+    const replacement = await indexedDbAssetStore.put(new Blob(['new voice']), { projectId, kind: 'voice' })
+    w.editTimbre(w.timbres.value.find(item => item.id === 'shared-voice'))
+    w.timbreForm.value.refPath = '/server/replaced.wav'
+    w.timbreForm.value.assetId = replacement.id
+    await w.saveTimbre()
+    await sleep(1150)
+    const replaced = await loadWorkspaceProject(projectId)
+    assert.equal(replaced.novels.find(item => item.id === firstId).roleTimbreIds['小明'], 'shared-voice')
+    assert.equal(replaced.scriptList.find(item => item.id === first.chapterIds[0]).data.characters[0].voiceFile, '/server/replaced.wav')
+    assert.equal(replaced.scriptList.find(item => item.id === first.chapterIds[0]).data.characters[0].voiceAssetId, replacement.id)
+    assert.equal(replaced.scriptList.find(item => item.id === first.chapterIds[1]).data.characters[0].voiceFile, '/local/override.wav')
+    await w.deleteTimbre('shared-voice')
+    await sleep(1150)
+    const deleted = await loadWorkspaceProject(projectId)
+    assert.equal(deleted.novels.find(item => item.id === firstId).roleTimbreIds['小明'], 'shared-voice')
+    assert.equal(deleted.scriptList.find(item => item.id === first.chapterIds[0]).data.characters[0].voiceFile, '/server/replaced.wav')
+    assert.ok(await indexedDbAssetStore.get(replacement.id))
   } finally { unmount() }
 })
 
@@ -294,5 +321,40 @@ test('novel TTS stops after completed lines and restores saved audio on refresh'
     assert.ok(lines[0].audioAssetId)
     assert.equal(lines[1].audioAssetId, undefined)
     assert.equal(await (await indexedDbAssetStore.get(lines[0].audioAssetId)).text(), 'audio-1')
+  } finally { globalThis.fetch = originalFetch; unmount() }
+})
+
+test('novel analysis retries failed chapters and saves book voices without switching scripts', async () => {
+  const projectId = `novel-analysis-${Date.now()}`
+  await saveWorkspaceProject(snapshot(projectId), undefined, projectId)
+  await setActiveProjectId(projectId)
+  const { workspace: w, unmount } = mountWorkspace()
+  const originalFetch = globalThis.fetch
+  try {
+    await sleep(550)
+    const novelId = await w.commitNovelImport('analysis.txt', { encoding: 'utf-8', intro: null,
+      chapters: [{ title: '第一章', content: '林夏走进房间。' }, { title: '第二章', content: '未选择。' }] }, [0], false)
+    const chapterIds = w.novels.value.find(item => item.id === novelId).chapterIds
+    w.timbres.value.push({ id: 'voice-lin', name: '女声', refPath: '/server/lin.wav', assetId: 'voice-asset' })
+    w.setNovelRoleTimbre(novelId, '林夏', 'voice-lin')
+    w.llmConfigs.value = [{ id: 'llm', baseUrl: 'https://llm.example/v1', model: 'model', key: 'key' }]
+    w.currentConfigId.value = 'llm'
+    let calls = 0
+    globalThis.fetch = async () => {
+      calls++
+      if (calls === 1) return new Response('temporary failure', { status: 500 })
+      return Response.json({ choices: [{ message: { content: JSON.stringify([
+        { type: 'dialogue', role_name: '林夏', text_content: '我来了。' },
+      ]) } }] })
+    }
+    await w.analyzeNovelBatch(novelId)
+    assert.equal(w.currentScriptId.value, 'default')
+    assert.equal((await loadWorkspaceProject(projectId)).scriptList.find(item => item.id === chapterIds[0]).data.analysisError, 'HTTP 500')
+    await w.analyzeNovelBatch(novelId, { failedOnly: true })
+    const stored = await loadWorkspaceProject(projectId)
+    assert.equal(calls, 2)
+    assert.equal(stored.scriptList.find(item => item.id === chapterIds[0]).data.scriptLines[0].text, '我来了。')
+    assert.equal(stored.scriptList.find(item => item.id === chapterIds[0]).data.characters[0].voiceFile, '/server/lin.wav')
+    assert.equal(stored.scriptList.find(item => item.id === chapterIds[1]).data.scriptLines.length, 0)
   } finally { globalThis.fetch = originalFetch; unmount() }
 })

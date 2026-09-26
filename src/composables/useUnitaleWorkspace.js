@@ -1251,6 +1251,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       }
                       mediaGeneration++;
                       analysisAbortController.value?.abort();
+                      novelBatchController?.abort();
                       for (const line of scriptLines.value) line.abortController?.abort();
                       for (const char of characters.value) char.abortController?.abort();
                       objectUrls.releaseAll();
@@ -2682,7 +2683,6 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   const commitNovelImport = async (fileName, parsed, selectedIndexes, includeIntro) => {
                       if (hasActiveMediaTask() || novelEditorId.value) throw new Error(translateMessage('storage.busy'));
                       const draft = buildNovelImport(fileName, parsed, new Set(selectedIndexes), includeIntro);
-                      if (!draft.novel.selectedChapterIds.length) throw new Error('Select at least one chapter');
                       const projectId = activeProjectId.value;
                       const store = directoryStore;
                       activeScriptTasks++;
@@ -2720,7 +2720,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   };
 
                   const setNovelRoleTimbre = (novelId, roleName, timbreId, overwrite = false) => {
-                      if (hasActiveMediaTask() || novelEditorId.value) throw new Error(translateMessage('storage.busy'));
+                      if (hasActiveMediaTask()) throw new Error(translateMessage('storage.busy'));
                       const novel = novels.value.find(item => item.id === novelId);
                       if (!novel) throw new Error('Novel not found');
                       const role = roleName.trim();
@@ -2740,7 +2740,10 @@ Write the generated narration, dialogue, character names, and image_prompt value
                               char.voiceAssetId = timbre?.assetId || '';
                               changed = true;
                           }
-                          if (changed) dirtyScriptIds.add(script.id);
+                          if (changed) {
+                              dirtyScriptIds.add(script.id);
+                              if (script.id === currentScriptId.value) characters.value = script.data.characters.map(char => ({ ...char }));
+                          }
                       }
                       triggerAutoSave();
                   };
@@ -2756,7 +2759,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       const selected = new Set(novel.selectedChapterIds);
                       const scripts = novel.chapterIds.map(id => scriptList.value.find(script => script.id === id))
                           .filter(script => script && selected.has(script.id) && script.data.rawScript.trim() &&
-                              (!failedOnly || script.data.analysisError) && (rerun || !script.data.scriptLines.length));
+                              (!failedOnly || script.data.analysisError) && (failedOnly || rerun || !script.data.scriptLines.length));
                       if (!scripts.length) throw new Error('No chapters need analysis');
                       const projectId = activeProjectId.value;
                       const controller = new AbortController();
@@ -2827,12 +2830,14 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       const copy = value => JSON.parse(JSON.stringify(value));
                       const emotions = copy(emotionPresets.value);
                       const timbreSnapshot = copy(timbres.value);
+                      const availableVoicePaths = new Set();
                       try {
                           for (const { script, line } of targets) {
                               if (controller.signal.aborted || activeProjectId.value !== projectId || activeAssetStore !== store) break;
                               try {
                                   const blob = await synthesizeNovelLine({ line, characters: script.data.characters,
-                                      emotions, timbres: timbreSnapshot, config: copy(config), store, signal: controller.signal });
+                                      emotions, timbres: timbreSnapshot, config: copy(config), store, signal: controller.signal,
+                                      availableVoicePaths });
                                   if (controller.signal.aborted) break;
                                   const saved = await store.put(blob, { projectId, kind: 'dialogue' });
                                   if (controller.signal.aborted || isWorkspaceUnmounted || activeProjectId.value !== projectId ||
@@ -2927,6 +2932,12 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       if (currentScriptId.value !== targetId) return false;
                       novelEditorId.value = null;
                       previousStandaloneScriptId = null;
+                      return true;
+                  };
+
+                  const navigateToTab = (tab) => {
+                      if (tab !== 'novel' && novelEditorId.value && !closeNovelChapter()) return false;
+                      activeTab.value = tab;
                       return true;
                   };
 
@@ -4392,7 +4403,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       lineRefs,
                       scriptListContainer,
                       scriptList, novels, currentScriptId, switchScript, addScript, deleteScriptTab,
-                      novelEditorId, novelBatch, commitNovelImport, setNovelSelection, setNovelRoleTimbre,
+                      novelEditorId, novelBatch, commitNovelImport, setNovelSelection, setNovelRoleTimbre, navigateToTab,
                       analyzeNovelBatch, generateNovelBatch, exportNovelBatch, stopNovelBatch, openNovelChapter, closeNovelChapter,
                       editingScriptId, startEditingScript, stopEditingScript, scriptNameInputRefs,
 

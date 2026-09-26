@@ -32,12 +32,12 @@ export default defineComponent({
                 <nav class="sidebar-nav" :aria-label="t('nav.main')">
                     <div class="sidebar-nav-group">
                         <div class="sidebar-nav-label">{{ t('nav.creation') }}</div>
-                        <button @click="activeTab = 'script'"
+                        <button @click="navigateToTab('script')"
                             :class="['nav-item', activeTab === 'script' ? 'is-active' : '']"
                             :aria-current="activeTab === 'script' ? 'page' : undefined">
                             <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#file-text"></use></svg><span>{{ t('nav.script') }}</span>
                         </button>
-                        <button @click="activeTab = 'novel'"
+                        <button @click="navigateToTab('novel')"
                             :class="['nav-item', activeTab === 'novel' ? 'is-active' : '']"
                             :aria-current="activeTab === 'novel' ? 'page' : undefined">
                             <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#book-open"></use></svg><span>{{ t('nav.novel') }}</span>
@@ -45,12 +45,12 @@ export default defineComponent({
                     </div>
                     <div class="sidebar-nav-group">
                         <div class="sidebar-nav-label">{{ t('nav.library') }}</div>
-                        <button @click="activeTab = 'timbres'"
+                        <button @click="navigateToTab('timbres')"
                             :class="['nav-item', activeTab === 'timbres' ? 'is-active' : '']"
                             :aria-current="activeTab === 'timbres' ? 'page' : undefined">
                             <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#audio-lines"></use></svg><span>{{ t('nav.timbres') }}</span>
                         </button>
-                        <button @click="activeTab = 'sfx'"
+                        <button @click="navigateToTab('sfx')"
                             :class="['nav-item', activeTab === 'sfx' ? 'is-active' : '']"
                             :aria-current="activeTab === 'sfx' ? 'page' : undefined">
                             <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#sliders-horizontal"></use></svg><span>{{ t('nav.effects') }}</span>
@@ -58,12 +58,12 @@ export default defineComponent({
                     </div>
                     <div class="sidebar-nav-group">
                         <div class="sidebar-nav-label">{{ t('nav.settings') }}</div>
-                        <button @click="activeTab = 'config'"
+                        <button @click="navigateToTab('config')"
                             :class="['nav-item', activeTab === 'config' ? 'is-active' : '']"
                             :aria-current="activeTab === 'config' ? 'page' : undefined">
                             <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#settings"></use></svg><span>{{ t('nav.config') }}</span>
                         </button>
-                        <button @click="activeTab = 'prompt'"
+                        <button @click="navigateToTab('prompt')"
                             :class="['nav-item', activeTab === 'prompt' ? 'is-active' : '']"
                             :aria-current="activeTab === 'prompt' ? 'page' : undefined">
                             <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#message-square"></use></svg><span>{{ t('nav.prompt') }}</span>

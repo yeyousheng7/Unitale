@@ -40,6 +40,10 @@ const pageCount = computed(() => Math.max(1, Math.ceil(filteredRows.value.length
 const selectedIds = computed(() => new Set<string>(activeNovel.value?.selectedChapterIds || []))
 const previewChapter = computed(() => previewIndex.value === -1 ? parsed.value?.intro : parsed.value?.chapters[previewIndex.value])
 const editorChapter = computed(() => workspace.scriptList.value.find(script => script.id === workspace.novelEditorId.value))
+const editorVoiceChoices = computed(() => workspace.characters.value.flatMap((character: any) => {
+  const timbre = workspace.timbres.value.find(item => item.refPath === character.voiceFile)
+  return timbre ? [{ role: String(character.name || '').trim(), timbre }] : []
+}).filter((item: any) => item.role))
 const analysisFailures = computed(() => chapterRows.value.filter((row: any) => !!row.script.data.analysisError).length)
 const ttsFailures = computed(() => chapterRows.value.reduce((count: number, row: any) =>
   count + row.script.data.scriptLines.filter((line: any) => !!line.ttsError).length, 0))
@@ -47,7 +51,7 @@ const incompleteExport = computed(() => incompleteNovelChapters(chapterRows.valu
   .filter((row: any) => selectedIds.value.has(row.id)).map((row: any) => row.script)))
 const novelRoles = computed<string[]>(() => [...new Set<string>(chapterRows.value.flatMap((row: any) =>
   (row.script.data.characters || []).map((character: any) => String(character.name || '').trim())).filter(Boolean))].sort())
-const batchRunning = computed(() => workspace.novelBatch.value.running && workspace.novelBatch.value.novelId === activeNovel.value?.id)
+const batchRunning = computed(() => workspace.novelBatch.value.running)
 
 watch([search, activeNovelId], () => { page.value = 0 })
 watch(() => workspace.novels.value.map(novel => novel.id).join(','), () => {
@@ -148,6 +152,11 @@ function syncRole(role: string) {
   try { workspace.setNovelRoleTimbre(activeNovel.value.id, role, activeNovel.value.roleTimbreIds[role] || '', true) }
   catch (cause) { error.value = String(cause) }
 }
+function applyChapterVoice(role: string, timbreId: string) {
+  if (!editorChapter.value?.novelId) return
+  try { workspace.setNovelRoleTimbre(editorChapter.value.novelId, role, timbreId) }
+  catch (cause) { error.value = String(cause) }
+}
 function openChapter(id: string) {
   if (!workspace.openNovelChapter(id)) error.value = t('novel.busy')
 }
@@ -158,7 +167,10 @@ function onKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape' && workspace.novelEditorId.value) { event.preventDefault(); closeChapter() }
 }
 onMounted(() => window.addEventListener('keydown', onKeydown))
-onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown)
+  if (workspace.novelEditorId.value) workspace.closeNovelChapter()
+})
 </script>
 
 <template>
@@ -311,7 +323,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
         </template>
         <footer class="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 p-5">
           <span class="text-sm text-slate-500">{{ t('novel.noChangeBeforeConfirm') }}</span>
-          <div class="flex gap-3"><button type="button" class="rounded-lg border border-slate-300 px-4 py-2" @click="cancelPreview">{{ t('novel.cancel') }}</button><button type="button" :disabled="!parsed || loading || importing || isEmptyNovel(parsed) || (!selectedIndexes.length && !includeIntro)" class="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white disabled:opacity-40" @click="confirmImport">{{ importing ? t('novel.importing') : t('novel.importSelected') }}</button></div>
+          <div class="flex gap-3"><button type="button" class="rounded-lg border border-slate-300 px-4 py-2" @click="cancelPreview">{{ t('novel.cancel') }}</button><button type="button" :disabled="!parsed || loading || importing || isEmptyNovel(parsed)" class="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white disabled:opacity-40" @click="confirmImport">{{ importing ? t('novel.importing') : t('novel.importSelected') }}</button></div>
         </footer>
       </div>
     </div>
@@ -319,6 +331,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
     <div v-if="workspace.novelEditorId.value" class="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/55 p-2 sm:p-5">
       <div role="dialog" aria-modal="true" :aria-label="t('novel.editChapter')" class="flex max-h-[94vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-xl">
         <header class="flex items-center justify-between border-b border-slate-200 px-5 py-4"><h2 class="font-bold text-slate-900">{{ t('novel.editChapter') }} · {{ editorChapter?.name }}</h2><button type="button" class="rounded-lg border border-slate-300 px-3 py-1.5" @click="closeChapter">{{ t('novel.close') }}</button></header>
+        <div v-if="editorVoiceChoices.length" class="flex flex-wrap items-center gap-2 border-b border-slate-200 px-5 py-2 text-sm">
+          <span class="text-slate-500">{{ t('novel.chapterVoiceSync') }}</span>
+          <button v-for="item in editorVoiceChoices" :key="item.role" type="button" class="rounded-full border border-blue-200 px-3 py-1 text-blue-700 hover:bg-blue-50" @click="applyChapterVoice(item.role, item.timbre.id)">{{ item.role }} · {{ item.timbre.name }}</button>
+        </div>
         <div class="min-h-0 overflow-auto bg-slate-50 p-4"><ScriptWorkspace embedded /></div>
       </div>
     </div>

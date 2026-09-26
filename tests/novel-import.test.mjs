@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { buildNovelImport, isEmptyNovel } from '../src/services/novel/novelImport.ts'
+import { parseTxtNovel } from '../src/services/text/txtNovelParser.ts'
+import 'fake-indexeddb/auto'
+import { loadWorkspaceProject, saveWorkspaceProject } from '../src/services/storage/workspaceDb.ts'
 
 test('novel import stores every chapter while selection only controls processing', () => {
   const parsed = { encoding: 'gb18030', intro: { title: '简介', content: '前言。\n' }, chapters: [
@@ -25,4 +28,23 @@ test('empty fallback is rejected but a heading-only chapter remains importable',
   const headingOnly = { ...empty, chapters: [{ title: '第一章', content: '' }] }
   assert.equal(isEmptyNovel(headingOnly), false)
   assert.equal(buildNovelImport('title.txt', headingOnly, new Set([0])).scripts[0].name, '第一章')
+})
+
+test('one thousand chapters with millions of characters keep order through storage', async t => {
+  const body = `　　雨落在窗前，林夏翻开旧信。\n\n${'这是这一章的正文，保留原有段落。'.repeat(100)}\n`
+  const source = Array.from({ length: 1000 }, (_, index) => `第${index + 1}章 远方来信\n${body}`).join('')
+  const start = performance.now()
+  const parsed = await parseTxtNovel(new Blob([source]))
+  const draft = buildNovelImport('长篇小说.txt', parsed, new Set([0, 999]))
+  const projectId = `long-novel-${crypto.randomUUID()}`
+  await saveWorkspaceProject({ characters: [], currentScriptId: draft.scripts[0].id, timestamp: Date.now(),
+    scriptList: draft.scripts, novels: [draft.novel],
+    libraries: { sfx: [], bgm: [], timbres: [], filters: [], emotions: [] } }, undefined, projectId)
+  const restored = await loadWorkspaceProject(projectId)
+  assert.equal(source.length > 1_000_000, true)
+  assert.equal(parsed.chapters.length, 1000)
+  assert.equal(restored.scriptList.length, 1000)
+  assert.equal(restored.scriptList[999].data.rawScript, parsed.chapters[999].content)
+  assert.deepEqual(restored.novels[0].selectedChapterIds, [draft.scripts[0].id, draft.scripts[999].id])
+  t.diagnostic(`parsed and saved ${source.length} characters across 1000 chapters in ${Math.round(performance.now() - start)} ms`)
 })
