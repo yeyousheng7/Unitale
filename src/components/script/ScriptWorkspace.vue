@@ -5,6 +5,8 @@ import { useI18n } from '../../i18n'
 import ScriptEditor from './ScriptEditor.vue'
 import ScriptInspector from './ScriptInspector.vue'
 
+withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
+
 type WorkspaceView = 'source' | 'script' | 'characters' | 'production'
 
 const workspace = useWorkspace()
@@ -74,7 +76,7 @@ watch(() => workspace.scriptLines.value.length, (length, previousLength) => {
 
 <template>
   <div class="script-page">
-    <div class="script-workspace-header">
+    <div v-if="!embedded" class="script-workspace-header">
       <div class="script-workspace-identity">
         <div class="script-workspace-switch-row">
           <span class="script-workspace-eyebrow">{{ $t("当前脚本") }}</span>
@@ -134,7 +136,7 @@ watch(() => workspace.scriptLines.value.length, (length, previousLength) => {
     </nav>
 
     <div class="script-workspace-content">
-      <ScriptEditor :view="activeView" @analysis-complete="activeView = 'characters'" />
+      <ScriptEditor :view="activeView" :allow-txt-import="!embedded" @analysis-complete="activeView = 'characters'" />
       <ScriptInspector :view="activeView" @edit-script="activeView = 'script'" @edit-line="openLine"
         @edit-characters="activeView = 'characters'" />
     </div>

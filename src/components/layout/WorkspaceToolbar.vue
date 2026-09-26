@@ -13,7 +13,7 @@ export default defineComponent({
 <template>
 <header class="workspace-toolbar">
                     <div class="workspace-heading">
-                        <h1>{{ activeTab === 'script' ? t('page.script') : activeTab === 'config' ? t('page.config') : activeTab === 'timbres' ? t('page.timbres') : activeTab === 'sfx' ? t('page.effects') : t('page.prompt') }}</h1>
+                        <h1>{{ activeTab === 'script' ? t('page.script') : activeTab === 'novel' ? t('page.novel') : activeTab === 'config' ? t('page.config') : activeTab === 'timbres' ? t('page.timbres') : activeTab === 'sfx' ? t('page.effects') : t('page.prompt') }}</h1>
                     </div>
 
                     <!-- 全局功能栏 (导出/导入) -->

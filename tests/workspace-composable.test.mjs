@@ -195,3 +195,32 @@ test('workspace saves inactive rename, protects TTS ownership, releases deleted 
     throw error
   } finally { unmount() }
 })
+
+test('novel import commits all chapters and floating edit restores the standalone script', async () => {
+  const projectId = `novel-composable-${Date.now()}`
+  await saveWorkspaceProject(snapshot(projectId), undefined, projectId)
+  await setActiveProjectId(projectId)
+  const { workspace: w, unmount } = mountWorkspace()
+  try {
+    await sleep(550)
+    const novelId = await w.commitNovelImport('book.txt', {
+      encoding: 'utf-8', intro: null,
+      chapters: [{ title: '第一章', content: '内容一。' }, { title: '第二章', content: '内容二。' }],
+    }, [0], false)
+    const stored = await loadWorkspaceProject(projectId)
+    const novel = stored.novels.find(item => item.id === novelId)
+    assert.equal(novel.chapterIds.length, 2)
+    assert.deepEqual(novel.selectedChapterIds, [novel.chapterIds[0]])
+    assert.equal(stored.scriptList.find(item => item.id === novel.chapterIds[1]).data.rawScript, '内容二。')
+    assert.equal(stored.currentScriptId, 'default')
+    assert.equal(w.openNovelChapter(novel.chapterIds[0]), true)
+    w.rawScript.value = '已修改的内容。'
+    await sleep(1150)
+    assert.equal((await loadWorkspaceProject(projectId)).currentScriptId, 'default')
+    assert.equal(w.closeNovelChapter(), true)
+    await sleep(1150)
+    const afterEdit = await loadWorkspaceProject(projectId)
+    assert.equal(afterEdit.currentScriptId, 'default')
+    assert.equal(afterEdit.scriptList.find(item => item.id === novel.chapterIds[0]).data.rawScript, '已修改的内容。')
+  } finally { unmount() }
+})

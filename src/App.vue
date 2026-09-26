@@ -6,9 +6,10 @@ import AppSidebar from './components/layout/AppSidebar.vue'
 import WorkspaceToolbar from './components/layout/WorkspaceToolbar.vue'
 import ModelConfigPage from './components/config/ModelConfigPage.vue'
 import ScriptWorkspace from './components/script/ScriptWorkspace.vue'
+import NovelBatchPage from './components/novel/NovelBatchPage.vue'
 
 export default defineComponent({
-  components: { AppSidebar, WorkspaceToolbar, ModelConfigPage, ScriptWorkspace },
+  components: { AppSidebar, WorkspaceToolbar, ModelConfigPage, ScriptWorkspace, NovelBatchPage },
   setup() {
     const workspace = useUnitaleWorkspace() as WorkspaceContext
     provide(workspaceKey, workspace)
@@ -482,6 +483,7 @@ export default defineComponent({
 
         <!-- 当前脚本的内容与制作工作区 -->
         <ScriptWorkspace v-if="activeTab === 'script'" />
+        <NovelBatchPage v-if="activeTab === 'novel'" />
 
         <!-- 页面 7: Prompt 管理 -->
         <div v-if="activeTab === 'prompt'" class="space-y-6">

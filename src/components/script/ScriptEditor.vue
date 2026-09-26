@@ -7,7 +7,7 @@ import ScriptDialogueCard from './ScriptDialogueCard.vue'
 
 export default defineComponent({
   components: { ScriptInsertActions, ScriptDialogueCard },
-  props: { view: { type: String, required: true } },
+  props: { view: { type: String, required: true }, allowTxtImport: { type: Boolean, default: true } },
   emits: ['analysis-complete'],
   setup(_props, { emit }) {
     const workspace = useWorkspace()
@@ -41,7 +41,7 @@ export default defineComponent({
                             <span v-if="rawScript.trim()">{{ $t('{count} 字', { count: rawScript.trim().length }) }}</span>
                         </div>
                         <div class="script-source-actions">
-                        <button type="button" @click="triggerImportTxt" :disabled="isExportingProject" class="toolbar-button">
+                        <button v-if="allowTxtImport" type="button" @click="triggerImportTxt" :disabled="isExportingProject" class="toolbar-button">
                             <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#upload"></use></svg>{{ $t("导入 TXT") }}
                         </button>
                         </div>

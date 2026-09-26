@@ -37,6 +37,11 @@ export default defineComponent({
                             :aria-current="activeTab === 'script' ? 'page' : undefined">
                             <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#file-text"></use></svg><span>{{ t('nav.script') }}</span>
                         </button>
+                        <button @click="activeTab = 'novel'"
+                            :class="['nav-item', activeTab === 'novel' ? 'is-active' : '']"
+                            :aria-current="activeTab === 'novel' ? 'page' : undefined">
+                            <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#book-open"></use></svg><span>{{ t('nav.novel') }}</span>
+                        </button>
                     </div>
                     <div class="sidebar-nav-group">
                         <div class="sidebar-nav-label">{{ t('nav.library') }}</div>

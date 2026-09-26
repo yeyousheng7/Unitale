@@ -16,6 +16,7 @@ import { clipAudioEvent, totalTimelineDuration } from '../services/audio/timelin
 import { createAudioDecodeQueue } from '../services/audio/decodeQueue'
 import { matchLibraryId } from '../services/audio/libraryRefs'
 import { requestService } from '../services/api/client'
+import { buildNovelImport } from '../services/novel/novelImport'
 
 export function useUnitaleWorkspace() {
                   const { locale, t: translateMessage } = useI18n();
@@ -68,7 +69,7 @@ export function useUnitaleWorkspace() {
                           characters: characters.value,
                           scriptList: scriptList.value,
                           novels: novels.value,
-                          currentScriptId: currentScriptId.value,
+                          currentScriptId: novelEditorId.value ? previousStandaloneScriptId : currentScriptId.value,
                           libraries: {
                               sfx: sfxLibrary.value,
                               bgm: bgmLibrary.value,
@@ -212,6 +213,8 @@ export function useUnitaleWorkspace() {
                   ]));
                   const novels = ref(/** @type {any[]} */ ([]));
                   const currentScriptId = ref('default');
+                  const novelEditorId = ref(null);
+                  let previousStandaloneScriptId = null;
                   const editingScriptId = ref(null);
                   const scriptNameInputRefs = ref(/** @type {Record<string, any>} */ ({}));
 
@@ -292,6 +295,7 @@ export function useUnitaleWorkspace() {
 
                       const idx = scriptList.value.findIndex(s => s.id === id);
                       if (idx === -1) return;
+                      if (scriptList.value[idx].kind === 'novelChapter') return;
 
                       releaseScriptMedia(scriptList.value[idx]);
                       if (id === currentScriptId.value) {
@@ -2399,7 +2403,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                           characters: characters.value,
                           scriptList: scriptList.value,
                           novels: novels.value,
-                          currentScriptId: currentScriptId.value,
+                          currentScriptId: novelEditorId.value ? previousStandaloneScriptId : currentScriptId.value,
                           libraries: { sfx: sfxLibrary.value, bgm: bgmLibrary.value,
                               timbres: timbres.value, filters: filterLibrary.value,
                               emotions: emotionPresets.value }
@@ -2504,6 +2508,8 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       previewPlayingFile.value = null;
                       scriptList.value = snapshot.scriptList;
                       novels.value = snapshot.novels || [];
+                      novelEditorId.value = null;
+                      previousStandaloneScriptId = null;
                       currentScriptId.value = snapshot.currentScriptId;
                       sfxLibrary.value = snapshot.libraries.sfx;
                       bgmLibrary.value = snapshot.libraries.bgm;
@@ -2666,6 +2672,66 @@ Write the generated narration, dialogue, character names, and image_prompt value
 
                   const triggerImportTxt = () => {
                       importTxtRef.value.click();
+                  };
+
+                  const commitNovelImport = async (fileName, parsed, selectedIndexes, includeIntro) => {
+                      if (hasActiveMediaTask() || novelEditorId.value) throw new Error(translateMessage('storage.busy'));
+                      const draft = buildNovelImport(fileName, parsed, new Set(selectedIndexes), includeIntro);
+                      if (!draft.novel.selectedChapterIds.length) throw new Error('Select at least one chapter');
+                      const projectId = activeProjectId.value;
+                      const store = directoryStore;
+                      activeScriptTasks++;
+                      try {
+                          if (saveTimeout) clearTimeout(saveTimeout);
+                          saveTimeout = null;
+                          await saveProjectToDB();
+                          if (projectId !== activeProjectId.value || store !== directoryStore) throw new Error('Project changed during TXT import');
+                          const changed = new Set(draft.scripts.map(script => script.id));
+                          const data = createProjectSaveSnapshot({
+                              characters: characters.value,
+                              scriptList: [...scriptList.value, ...draft.scripts],
+                              novels: [...novels.value, draft.novel],
+                              currentScriptId: currentScriptId.value,
+                              libraries: { sfx: sfxLibrary.value, bgm: bgmLibrary.value, timbres: timbres.value,
+                                  filters: filterLibrary.value, emotions: emotionPresets.value }
+                          }, changed);
+                          if (store) await store.saveProject(data, changed);
+                          else await saveWorkspaceProject(data, changed, projectId);
+                          scriptList.value.push(...draft.scripts);
+                          novels.value.push(draft.novel);
+                          return draft.novel.id;
+                      } finally {
+                          activeScriptTasks--;
+                      }
+                  };
+
+                  const setNovelSelection = (novelId, selectedIds) => {
+                      const novel = novels.value.find(item => item.id === novelId);
+                      if (!novel) return;
+                      const valid = new Set(novel.chapterIds);
+                      novel.selectedChapterIds = [...new Set(selectedIds)].filter(id => valid.has(id));
+                      triggerAutoSave();
+                  };
+
+                  const openNovelChapter = (id) => {
+                      const chapter = scriptList.value.find(script => script.id === id && script.kind === 'novelChapter');
+                      if (!chapter || hasActiveMediaTask() || novelEditorId.value) return false;
+                      previousStandaloneScriptId = currentScriptId.value;
+                      switchScript(id);
+                      if (currentScriptId.value !== id) { previousStandaloneScriptId = null; return false; }
+                      novelEditorId.value = id;
+                      return true;
+                  };
+
+                  const closeNovelChapter = () => {
+                      if (!novelEditorId.value) return true;
+                      if (hasActiveMediaTask()) return false;
+                      const targetId = previousStandaloneScriptId;
+                      switchScript(targetId);
+                      if (currentScriptId.value !== targetId) return false;
+                      novelEditorId.value = null;
+                      previousStandaloneScriptId = null;
+                      return true;
                   };
 
                   const handleImportTxt = (event) => {
@@ -4127,6 +4193,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       lineRefs,
                       scriptListContainer,
                       scriptList, novels, currentScriptId, switchScript, addScript, deleteScriptTab,
+                      novelEditorId, commitNovelImport, setNovelSelection, openNovelChapter, closeNovelChapter,
                       editingScriptId, startEditingScript, stopEditingScript, scriptNameInputRefs,
 
                       generationLanguage,
