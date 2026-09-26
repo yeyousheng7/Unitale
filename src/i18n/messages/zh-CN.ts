@@ -192,7 +192,6 @@ export const zhCN = {
   'toolbar.voiceService': '配音模型',
   'toolbar.selectVoiceService': '选择配音模型',
   'toolbar.noVoiceService': '未配置配音模型',
-  'toolbar.manageModels': '模型配置',
   'toolbar.importProject': '导入 ZIP 工程',
   'toolbar.exportProject': '导出 ZIP 工程',
   '未命名脚本': '未命名脚本',

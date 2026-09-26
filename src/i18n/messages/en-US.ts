@@ -194,7 +194,6 @@ export const enUS = {
   "toolbar.voiceService": "Voice model",
   "toolbar.selectVoiceService": "Select voice model",
   "toolbar.noVoiceService": "No voice model",
-  "toolbar.manageModels": "Model settings",
   "toolbar.importProject": "Import ZIP project",
   "toolbar.exportProject": "Export ZIP project",
   "未命名脚本": "Untitled script",

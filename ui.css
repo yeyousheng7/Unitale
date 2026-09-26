@@ -149,14 +149,11 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 }
 .workspace-heading { display: flex; align-items: center; gap: 17px; min-width: 0; }
 .workspace-heading h1 { margin: 0; font-size: 21px; font-weight: 750; letter-spacing: -.035em; white-space: nowrap; }
-.toolbar-models { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 9px 14px; min-width: 0; margin-left: auto; }
+.toolbar-models { display: flex; align-items: center; justify-content: flex-end; gap: 20px; min-width: 0; margin-left: auto; }
 .toolbar-model-field { display: inline-flex; align-items: center; gap: 8px; min-width: 0; color: #64748b; font-size: 12px; font-weight: 650; white-space: nowrap; }
-.toolbar-model-field select { width: 138px; min-width: 0; min-height: 36px; padding: 7px 9px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; color: #334155; font-size: 12px; font-weight: 650; }
+.toolbar-model-field select { width: 168px; min-width: 0; min-height: 36px; padding: 7px 9px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; color: #334155; font-size: 12px; font-weight: 650; }
 .toolbar-model-field select:disabled { background: #f8fafc; color: #94a3b8; }
-.toolbar-model-field select:focus-visible, .toolbar-model-settings:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
-.toolbar-model-settings { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 7px 2px; color: #2563eb; font-size: 12px; font-weight: 700; white-space: nowrap; }
-.toolbar-model-settings:hover { color: #1d4ed8; text-decoration: underline; }
-.toolbar-model-settings svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; }
+.toolbar-model-field select:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
 .toolbar-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .toolbar-button, .toolbar-select {
     display: inline-flex;
@@ -462,7 +459,7 @@ button:disabled { cursor: not-allowed; opacity: .55; }
     .workspace-toolbar { min-height: 0; padding: 14px; }
     .workspace-heading h1 { font-size: 18px; }
     .toolbar-actions { width: 100%; }
-    .toolbar-models { width: 100%; gap: 10px; }
+    .toolbar-models { width: 100%; flex-wrap: wrap; justify-content: flex-start; gap: 10px; }
     .toolbar-model-field { flex: 1 1 210px; }
     .toolbar-model-field select { flex: 1; width: 100%; }
     .toolbar-button { min-height: 34px; }

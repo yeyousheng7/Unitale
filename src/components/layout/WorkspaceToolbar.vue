@@ -37,9 +37,6 @@ export default defineComponent({
                                 <option v-for="config in ttsConfigs" :key="config.id" :value="config.id">{{ config.name }}</option>
                             </select>
                         </label>
-                        <button type="button" class="toolbar-model-settings" @click="navigateToTab('config')">
-                            <svg aria-hidden="true"><use href="../../../assets/icons/ui-icons.svg#settings"></use></svg>{{ t('toolbar.manageModels') }}
-                        </button>
                     </div>
 
                     <!-- 全局功能栏 (导出/导入) -->
