@@ -14,6 +14,7 @@ test('novel import stores every chapter while selection only controls processing
   assert.equal(novel.title, '长夜微光')
   assert.equal(novel.encoding, 'gb18030')
   assert.deepEqual(novel.chapterIds, scripts.map(script => script.id))
+  assert.equal(novel.introScriptId, scripts[0].id)
   assert.deepEqual(novel.selectedChapterIds, [scripts[2].id])
   assert.equal(scripts[0].name, '简介')
   assert.equal(scripts[1].data.rawScript, '正文一。\n\n')
@@ -28,6 +29,16 @@ test('empty fallback is rejected but a heading-only chapter remains importable',
   const headingOnly = { ...empty, chapters: [{ title: '第一章', content: '' }] }
   assert.equal(isEmptyNovel(headingOnly), false)
   assert.equal(buildNovelImport('title.txt', headingOnly, new Set([0])).scripts[0].name, '第一章')
+  assert.equal(buildNovelImport('title.txt', headingOnly, new Set()).novel.introScriptId, undefined)
+})
+
+test('whole-book preview confirmation stores front matter and starts with no processing selection', () => {
+  const parsed = { encoding: 'utf-8', intro: { title: '简介', content: '卷首。\n' },
+    chapters: [{ title: '第一章', content: '正文。' }] }
+  const { novel, scripts } = buildNovelImport('book.txt', parsed, new Set(), false)
+  assert.equal(scripts.length, 2)
+  assert.equal(novel.introScriptId, scripts[0].id)
+  assert.deepEqual(novel.selectedChapterIds, [])
 })
 
 test('one thousand chapters with millions of characters keep order through storage', async t => {

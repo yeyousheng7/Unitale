@@ -32,6 +32,8 @@ export interface NovelDocument {
   encoding: string
   /** All chapters in source order, including chapters excluded from the current batch. */
   chapterIds: string[]
+  /** Script ID of the source text before chapter one, when present. */
+  introScriptId?: string
   selectedChapterIds: string[]
   /** Role name -> project timbre library entry ID. */
   roleTimbreIds: Record<string, string>

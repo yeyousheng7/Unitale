@@ -31,11 +31,12 @@ export function buildNovelImport(
     if (selected) selectedChapterIds.push(script.id)
   }
   if (result.intro) append(result.intro, includeIntro)
+  const introScriptId = result.intro ? scripts[0]!.id : undefined
   result.chapters.forEach((chapter, index) => append(chapter, selectedChapterIndexes.has(index)))
   const title = fileName.replace(/\.txt$/i, '').trim() || '未命名小说'
   return {
     novel: { id: novelId, title, sourceFileName: fileName, encoding: result.encoding,
-      chapterIds: scripts.map(script => script.id), selectedChapterIds, roleTimbreIds: {} },
+      chapterIds: scripts.map(script => script.id), introScriptId, selectedChapterIds, roleTimbreIds: {} },
     scripts,
   }
 }

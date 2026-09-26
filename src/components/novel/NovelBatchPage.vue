@@ -14,14 +14,14 @@ const fileInput = ref<HTMLInputElement | null>(null)
 const file = ref<File | null>(null)
 const encoding = ref('auto')
 const parsed = ref<ParsedTxtNovel | null>(null)
-const selectedIndexes = ref<number[]>([])
-const includeIntro = ref(false)
 const previewIndex = ref(0)
 const previewPage = ref(0)
-const previewPageSize = ref(50)
+const previewJump = ref<number | null>(null)
+const previewPageSize = 50
 const loading = ref(false)
 const importing = ref(false)
 const error = ref('')
+const importNotice = ref('')
 let parseGeneration = 0
 
 const activeNovelId = ref('')
@@ -29,7 +29,6 @@ const activeNovel = computed(() => workspace.novels.value.find(novel => novel.id
 const novelTitleInput = ref<HTMLInputElement | null>(null)
 const novelMenu = ref<HTMLDetailsElement | null>(null)
 const chapterSelectionMenu = ref<HTMLDetailsElement | null>(null)
-const previewSelectionMenu = ref<HTMLDetailsElement | null>(null)
 const renamingNovelId = ref('')
 const novelTitleDraft = ref('')
 const search = ref('')
@@ -51,14 +50,10 @@ const pageIds = computed<string[]>(() => visibleRows.value.map((row: { id: strin
 const pageAllSelected = computed(() => pageIds.value.length > 0 && pageIds.value.every(id => selectedIds.value.has(id)))
 const pageSomeSelected = computed(() => pageIds.value.some(id => selectedIds.value.has(id)))
 const previewChapter = computed(() => previewIndex.value === -1 ? parsed.value?.intro : parsed.value?.chapters[previewIndex.value])
-const previewPageCount = computed(() => Math.max(1, Math.ceil((parsed.value?.chapters.length || 0) / previewPageSize.value)))
+const previewPageCount = computed(() => Math.max(1, Math.ceil((parsed.value?.chapters.length || 0) / previewPageSize)))
 const visiblePreviewChapters = computed(() => (parsed.value?.chapters || [])
-  .slice(previewPage.value * previewPageSize.value, (previewPage.value + 1) * previewPageSize.value)
-  .map((chapter, offset) => ({ chapter, index: previewPage.value * previewPageSize.value + offset })))
-const previewPageIndexes = computed(() => visiblePreviewChapters.value.map(row => row.index))
-const previewPageAllSelected = computed(() => previewPageIndexes.value.length > 0 &&
-  previewPageIndexes.value.every(index => selectedIndexes.value.includes(index)))
-const previewPageSomeSelected = computed(() => previewPageIndexes.value.some(index => selectedIndexes.value.includes(index)))
+  .slice(previewPage.value * previewPageSize, (previewPage.value + 1) * previewPageSize)
+  .map((chapter, offset) => ({ chapter, index: previewPage.value * previewPageSize + offset })))
 const editorChapter = computed(() => workspace.scriptList.value.find(script => script.id === workspace.novelEditorId.value))
 const editorVoiceChoices = computed(() => workspace.characters.value.flatMap((character: any) => {
   const timbre = workspace.timbres.value.find(item => item.refPath === character.voiceFile)
@@ -78,7 +73,6 @@ watch(activeNovelId, () => {
   if (novelMenu.value) novelMenu.value.open = false
   if (renamingNovelId.value && renamingNovelId.value !== activeNovelId.value) cancelNovelRename()
 })
-watch(previewPageSize, () => { previewPage.value = 0; previewIndex.value = parsed.value?.intro ? -1 : 0 })
 watch(batchRunning, running => {
   if (!running) return
   if (novelMenu.value) novelMenu.value.open = false
@@ -98,10 +92,9 @@ async function parseSelectedFile(nextFile: File, nextEncoding = 'auto') {
     const result = await parseTxtNovel(nextFile, { encoding: nextEncoding })
     if (generation !== parseGeneration) return
     parsed.value = result
-    selectedIndexes.value = result.chapters.flatMap((chapter, index) => chapter.content.trim() ? [index] : [])
-    includeIntro.value = false
     previewPage.value = 0
-    previewIndex.value = result.intro ? -1 : 0
+    previewJump.value = null
+    previewIndex.value = 0
   } catch (cause) {
     if (generation === parseGeneration) { parsed.value = null; error.value = String(cause) }
   } finally {
@@ -116,6 +109,7 @@ function onFileChange(event: Event) {
   input.value = ''
   if (!nextFile) return
   file.value = nextFile
+  importNotice.value = ''
   encoding.value = 'auto'
   void parseSelectedFile(nextFile)
 }
@@ -126,34 +120,29 @@ function resetPreview() {
   file.value = null
   error.value = ''
   loading.value = false
-  if (previewSelectionMenu.value) previewSelectionMenu.value.open = false
 }
 function cancelPreview() {
   if (importing.value) return
   resetPreview()
 }
-function changePreviewSelection(action: ChapterSelectionAction) {
-  if (!parsed.value || importing.value || loading.value) return
-  const indexes = parsed.value.chapters.map((_, index) => index)
-  selectedIndexes.value = updateChapterSelection(indexes, new Set(selectedIndexes.value), action, previewPageIndexes.value)
-  if (previewSelectionMenu.value) previewSelectionMenu.value.open = false
-}
 function changePreviewPage(next: number) {
   previewPage.value = Math.max(0, Math.min(previewPageCount.value - 1, next))
-  previewIndex.value = previewPage.value * previewPageSize.value
+  previewIndex.value = previewPage.value * previewPageSize
 }
-function togglePreviewIndex(index: number) {
-  selectedIndexes.value = selectedIndexes.value.includes(index)
-    ? selectedIndexes.value.filter(value => value !== index)
-    : [...selectedIndexes.value, index]
+function jumpToPreviewChapter() {
+  const number = Number(previewJump.value)
+  if (!Number.isInteger(number) || number < 1 || number > (parsed.value?.chapters.length || 0)) return
+  previewIndex.value = number - 1
+  previewPage.value = Math.floor(previewIndex.value / previewPageSize)
 }
 async function confirmImport() {
   if (!file.value || !parsed.value || importing.value) return
   importing.value = true
   error.value = ''
   try {
-    const id = await workspace.commitNovelImport(file.value.name, parsed.value, selectedIndexes.value, includeIntro.value)
+    const id = await workspace.commitNovelImport(file.value.name, parsed.value, [], false)
     activeNovelId.value = id
+    importNotice.value = t('novel.importedNotice', { count: parsed.value.chapters.length })
     resetPreview()
   } catch (cause) { error.value = String(cause) }
   finally { importing.value = false }
@@ -246,7 +235,7 @@ function onKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape' && workspace.novelEditorId.value) { event.preventDefault(); closeChapter() }
 }
 function onDocumentPointerDown(event: PointerEvent) {
-  for (const menu of [novelMenu.value, chapterSelectionMenu.value, previewSelectionMenu.value]) {
+  for (const menu of [novelMenu.value, chapterSelectionMenu.value]) {
     if (menu?.open && !menu.contains(event.target as Node)) menu.open = false
   }
 }
@@ -273,6 +262,7 @@ onBeforeUnmount(() => {
     </div>
 
     <template v-if="activeNovel">
+      <p v-if="importNotice" role="status" class="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">{{ importNotice }}</p>
       <div class="rounded-2xl border border-slate-200 bg-white p-5">
         <div class="flex flex-wrap items-center justify-between gap-4">
           <div class="flex flex-wrap items-center gap-2">
@@ -405,59 +395,45 @@ onBeforeUnmount(() => {
     <p v-if="error && !parsed" role="alert" class="rounded-lg bg-red-50 p-3 text-sm text-red-700">{{ error }}</p>
 
     <div v-if="file" class="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/50 p-3" @click.self="cancelPreview">
-      <div role="dialog" aria-modal="true" :aria-label="t('novel.previewTitle')" class="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-xl">
-        <header class="flex items-center justify-between border-b border-slate-200 p-5">
-          <div><h2 class="text-xl font-bold text-slate-900">{{ t('novel.previewTitle') }}</h2><p class="text-sm text-slate-500">{{ file.name }} · {{ parsed?.chapters.length || 0 }} {{ t('novel.chapters') }}</p></div>
-          <button type="button" :aria-label="t('novel.cancel')" class="text-2xl text-slate-500" @click="cancelPreview">×</button>
+      <div role="dialog" aria-modal="true" :aria-label="t('novel.previewTitle')" class="flex h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-xl">
+        <header class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-4">
+          <div><h2 class="text-xl font-bold text-slate-900">{{ t('novel.previewTitle') }}</h2><p class="text-sm text-slate-500">{{ file.name }} · {{ parsed?.chapters.length || 0 }} {{ t('novel.chapters') }} · {{ parsed?.encoding || '—' }}</p></div>
+          <div class="flex items-center gap-3 text-sm">
+            <label for="novel-encoding">{{ t('novel.encoding') }}</label>
+            <select id="novel-encoding" v-model="encoding" :disabled="importing" class="rounded-lg border border-slate-300 px-3 py-2" @change="changeEncoding">
+              <option value="auto">{{ t('novel.autoEncoding') }}</option><option value="utf-8">UTF-8</option><option value="gbk">GBK</option><option value="gb18030">GB18030</option>
+            </select>
+            <span v-if="loading">{{ t('novel.parsing') }}</span>
+            <button type="button" :aria-label="t('novel.cancel')" class="ml-2 text-2xl text-slate-500" @click="cancelPreview">×</button>
+          </div>
         </header>
-        <div class="flex flex-wrap items-center gap-3 border-b border-slate-200 px-5 py-3 text-sm">
-          <label for="novel-encoding">{{ t('novel.encoding') }}</label>
-          <select id="novel-encoding" v-model="encoding" class="rounded-lg border border-slate-300 px-3 py-2" @change="changeEncoding">
-            <option value="auto">{{ t('novel.autoEncoding') }}</option><option value="utf-8">UTF-8</option><option value="gbk">GBK</option><option value="gb18030">GB18030</option>
-          </select>
-          <span v-if="parsed" class="text-slate-500">{{ t('novel.usedEncoding') }}: {{ parsed.encoding }}</span>
-          <span v-if="loading">{{ t('novel.parsing') }}</span>
-        </div>
         <p v-if="error" role="alert" class="mx-5 mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">{{ error }}</p>
         <template v-if="parsed">
           <p v-if="isEmptyNovel(parsed)" class="mx-5 mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">{{ t('novel.emptyFile') }}</p>
           <p v-else-if="parsed.chapters.length === 1 && parsed.chapters[0]?.title === '正文'" class="mx-5 mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">{{ t('novel.singleChapter') }}</p>
-          <div v-if="parsed.intro" class="mx-5 mt-3 flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700">
-            <input v-model="includeIntro" type="checkbox" :disabled="importing || loading" :aria-label="t('novel.intro')"><button type="button" class="text-left" @click="previewIndex = -1">{{ t('novel.intro') }} · {{ parsed.intro.content.length }} {{ t('novel.characters') }}</button>
-          </div>
-          <div class="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-hidden p-5 md:grid-cols-2">
+          <div class="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-hidden p-5 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
             <div class="flex min-h-0 flex-col rounded-lg border border-slate-200">
               <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 p-2 text-sm">
                 <strong class="text-slate-800">{{ t('novel.detectedChapters') }}</strong>
-                <div class="flex items-center gap-2">
-                  <span class="whitespace-nowrap text-slate-500">{{ t('novel.selectedFraction', { selected: selectedIndexes.length, total: parsed.chapters.length }) }}</span>
-                  <details ref="previewSelectionMenu" class="relative" :class="importing || loading ? 'pointer-events-none opacity-40' : ''" :aria-disabled="importing || loading">
-                    <summary :aria-label="t('novel.selectionScope')" class="cursor-pointer list-none rounded-md border border-slate-300 px-2 py-1 font-medium text-blue-700 hover:bg-blue-50">{{ t('novel.selectionScope') }} ▾</summary>
-                    <div class="absolute right-0 z-30 mt-1 min-w-36 rounded-lg border border-slate-200 bg-white p-1 shadow-lg">
-                      <button type="button" class="block w-full rounded-md px-3 py-2 text-left hover:bg-slate-50" @click="changePreviewSelection('all')">{{ t('novel.selectAllBook') }}</button>
-                      <button type="button" class="block w-full rounded-md px-3 py-2 text-left hover:bg-slate-50" @click="changePreviewSelection('invert')">{{ t('novel.invertBook') }}</button>
-                      <button type="button" class="block w-full rounded-md px-3 py-2 text-left hover:bg-slate-50" @click="changePreviewSelection('clear')">{{ t('novel.clearSelection') }}</button>
-                    </div>
-                  </details>
-                </div>
+                <form class="flex items-center gap-1" @submit.prevent="jumpToPreviewChapter">
+                  <input v-model.number="previewJump" type="number" min="1" :max="parsed.chapters.length" :aria-label="t('novel.jumpNumber')" :placeholder="t('novel.jumpNumber')" class="w-20 rounded-md border border-slate-300 px-2 py-1">
+                  <button type="submit" class="rounded-md border border-slate-300 px-2 py-1 text-blue-700">{{ t('novel.jump') }}</button>
+                </form>
               </div>
+              <button v-if="parsed.intro" type="button" class="border-b border-slate-100 px-3 py-2 text-left text-sm" :class="previewIndex === -1 ? 'bg-blue-50 text-blue-700' : 'text-slate-700'" @click="previewIndex = -1">
+                {{ t('novel.intro') }} <span class="text-slate-400">· {{ parsed.intro.content.length }} {{ t('novel.characters') }}</span>
+              </button>
               <div class="flex items-center gap-2 border-b border-slate-200 bg-slate-50 p-2 text-xs text-slate-500">
-                <label class="flex items-center gap-2 whitespace-nowrap"><input type="checkbox" :checked="previewPageAllSelected" :indeterminate="previewPageSomeSelected && !previewPageAllSelected" :disabled="importing || loading || !visiblePreviewChapters.length" @change="changePreviewSelection('page')">{{ t('novel.selectPage') }}</label>
-                <span class="ml-3">#</span><span>{{ t('novel.title') }}</span>
+                <span class="w-6 text-right">#</span><span>{{ t('novel.title') }}</span>
               </div>
               <div class="min-h-0 flex-1 overflow-auto">
-                <div v-for="row in visiblePreviewChapters" :key="row.index" class="flex items-center gap-2 border-b border-slate-100 p-3" :class="previewIndex === row.index ? 'bg-blue-50' : ''">
-                  <input type="checkbox" :checked="selectedIndexes.includes(row.index)" :disabled="importing || loading" :aria-label="`${t('novel.select')} ${row.chapter.title}`" @change="togglePreviewIndex(row.index)">
+                <div v-for="row in visiblePreviewChapters" :key="row.index" class="flex items-center gap-2 border-b border-slate-100 px-3 py-2" :class="previewIndex === row.index ? 'bg-blue-50' : ''">
                   <span class="w-6 shrink-0 text-right text-xs text-slate-400">{{ row.index + 1 }}</span>
-                  <button type="button" class="min-w-0 flex-1 truncate text-left" @click="previewIndex = row.index">{{ row.chapter.title }} <span class="text-slate-400">· {{ row.chapter.content.length }} {{ t('novel.characters') }}</span></button>
+                  <button type="button" class="min-w-0 flex-1 truncate text-left text-sm" @click="previewIndex = row.index">{{ row.chapter.title }} <span class="text-slate-400">· {{ row.chapter.content.length }} {{ t('novel.characters') }}</span><span v-if="!row.chapter.content.trim()" class="ml-1 text-amber-700">{{ t('novel.emptyBody') }}</span></button>
                 </div>
               </div>
               <div class="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 p-2 text-sm text-slate-500">
-                <label class="flex items-center gap-1" for="novel-preview-page-size">{{ t('novel.pageSize') }}
-                  <select id="novel-preview-page-size" v-model.number="previewPageSize" class="rounded-md border border-slate-300 bg-white px-2 py-1">
-                    <option v-for="size in [20, 50, 100, 200]" :key="size" :value="size">{{ size }}</option>
-                  </select>
-                </label>
+                <span>{{ t('novel.pageSize') }} 50</span>
                 <div class="flex items-center gap-2">
                   <button type="button" :disabled="previewPage === 0" class="disabled:opacity-40" @click="changePreviewPage(previewPage - 1)">{{ t('novel.previous') }}</button>
                   <span>{{ previewPage + 1 }} / {{ previewPageCount }}</span>
@@ -472,8 +448,8 @@ onBeforeUnmount(() => {
           </div>
         </template>
         <footer class="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 p-5">
-          <span class="text-sm text-slate-500">{{ t('novel.noChangeBeforeConfirm') }}</span>
-          <div class="flex gap-3"><button type="button" class="rounded-lg border border-slate-300 px-4 py-2" @click="cancelPreview">{{ t('novel.cancel') }}</button><button type="button" :disabled="!parsed || loading || importing || isEmptyNovel(parsed)" class="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white disabled:opacity-40" @click="confirmImport">{{ importing ? t('novel.importing') : t('novel.importSelected') }}</button></div>
+          <span class="text-sm text-slate-500">{{ t('novel.importAllHint') }}</span>
+          <div class="flex gap-3"><button type="button" :disabled="importing" class="rounded-lg border border-slate-300 px-4 py-2" @click="cancelPreview">{{ t('novel.cancel') }}</button><button type="button" :disabled="!parsed || loading || importing || isEmptyNovel(parsed)" class="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white disabled:opacity-40" @click="confirmImport">{{ importing ? t('novel.importing') : t('novel.importWhole') }}</button></div>
         </footer>
       </div>
     </div>
