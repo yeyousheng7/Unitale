@@ -224,3 +224,32 @@ test('novel import commits all chapters and floating edit restores the standalon
     assert.equal(afterEdit.scriptList.find(item => item.id === novel.chapterIds[0]).data.rawScript, '已修改的内容。')
   } finally { unmount() }
 })
+
+test('novel voice mapping updates inactive chapters and persists without affecting another book', async () => {
+  const projectId = `novel-voices-${Date.now()}`
+  await saveWorkspaceProject(snapshot(projectId), undefined, projectId)
+  await setActiveProjectId(projectId)
+  const { workspace: w, unmount } = mountWorkspace()
+  try {
+    await sleep(550)
+    const parsed = { encoding: 'utf-8', intro: null, chapters: [{ title: '第一章', content: '甲' }, { title: '第二章', content: '乙' }] }
+    const firstId = await w.commitNovelImport('one.txt', parsed, [0, 1], false)
+    const secondId = await w.commitNovelImport('two.txt', parsed, [0, 1], false)
+    const first = w.novels.value.find(item => item.id === firstId)
+    const second = w.novels.value.find(item => item.id === secondId)
+    for (const id of [...first.chapterIds, ...second.chapterIds]) {
+      assert.equal(w.openNovelChapter(id), true)
+      w.characters.value = [{ id: `${id}-role`, name: '小明',
+        voiceFile: id === first.chapterIds[1] ? '/local/override.wav' : '', voiceAssetId: '' }]
+      assert.equal(w.closeNovelChapter(), true)
+    }
+    w.timbres.value.push({ id: 'shared-voice', name: '男声', refPath: '/server/shared.wav', assetId: 'asset-voice' })
+    w.setNovelRoleTimbre(firstId, ' 小明 ', 'shared-voice')
+    await sleep(1150)
+    const stored = await loadWorkspaceProject(projectId)
+    assert.equal(stored.novels.find(item => item.id === firstId).roleTimbreIds['小明'], 'shared-voice')
+    assert.equal(stored.scriptList.find(item => item.id === first.chapterIds[0]).data.characters[0].voiceFile, '/server/shared.wav')
+    assert.equal(stored.scriptList.find(item => item.id === first.chapterIds[1]).data.characters[0].voiceFile, '/local/override.wav')
+    assert.equal(stored.scriptList.find(item => item.id === second.chapterIds[0]).data.characters[0].voiceFile, '')
+  } finally { unmount() }
+})

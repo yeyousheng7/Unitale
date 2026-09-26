@@ -39,6 +39,10 @@ const pageCount = computed(() => Math.max(1, Math.ceil(filteredRows.value.length
 const selectedIds = computed(() => new Set<string>(activeNovel.value?.selectedChapterIds || []))
 const previewChapter = computed(() => previewIndex.value === -1 ? parsed.value?.intro : parsed.value?.chapters[previewIndex.value])
 const editorChapter = computed(() => workspace.scriptList.value.find(script => script.id === workspace.novelEditorId.value))
+const analysisFailures = computed(() => chapterRows.value.filter((row: any) => !!row.script.data.analysisError).length)
+const novelRoles = computed<string[]>(() => [...new Set<string>(chapterRows.value.flatMap((row: any) =>
+  (row.script.data.characters || []).map((character: any) => String(character.name || '').trim())).filter(Boolean))].sort())
+const batchRunning = computed(() => workspace.novelBatch.value.running && workspace.novelBatch.value.novelId === activeNovel.value?.id)
 
 watch([search, activeNovelId], () => { page.value = 0 })
 watch(() => workspace.novels.value.map(novel => novel.id).join(','), () => {
@@ -107,6 +111,25 @@ function toggleChapter(id: string) {
   else next.add(id)
   workspace.setNovelSelection(activeNovel.value.id, [...next])
 }
+async function runAnalysis(failedOnly = false, rerun = false) {
+  if (!activeNovel.value) return
+  if (rerun && !window.confirm(t('novel.rerunConfirm'))) return
+  error.value = ''
+  try { await workspace.analyzeNovelBatch(activeNovel.value.id, { failedOnly, rerun }) }
+  catch (cause) { error.value = String(cause) }
+}
+function setRoleTimbre(role: string, event: Event, overwrite = false) {
+  if (!activeNovel.value) return
+  const id = (event.target as HTMLSelectElement).value
+  try { workspace.setNovelRoleTimbre(activeNovel.value.id, role, id, overwrite) }
+  catch (cause) { error.value = String(cause) }
+}
+function syncRole(role: string) {
+  if (!activeNovel.value) return
+  if (!window.confirm(t('novel.syncRoleConfirm'))) return
+  try { workspace.setNovelRoleTimbre(activeNovel.value.id, role, activeNovel.value.roleTimbreIds[role] || '', true) }
+  catch (cause) { error.value = String(cause) }
+}
 function openChapter(id: string) {
   if (!workspace.openNovelChapter(id)) error.value = t('novel.busy')
 }
@@ -153,6 +176,36 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
       </div>
 
       <div class="rounded-2xl border border-slate-200 bg-white p-5">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div><h2 class="text-lg font-bold text-slate-900">{{ t('novel.batchAnalysis') }}</h2><p class="text-sm text-slate-500">{{ t('novel.analysisHint') }}</p></div>
+          <span v-if="analysisFailures" class="rounded-full bg-red-50 px-3 py-1 text-sm text-red-700">{{ t('novel.failed') }} {{ analysisFailures }}</span>
+        </div>
+        <div class="mt-4 flex flex-wrap items-center gap-2">
+          <button v-if="!batchRunning" type="button" class="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white hover:bg-blue-700" @click="runAnalysis()">{{ t('novel.analyzeSelected') }}</button>
+          <button v-if="!batchRunning" type="button" class="rounded-lg border border-slate-300 px-4 py-2" @click="runAnalysis(true)">{{ t('novel.retryFailed') }}</button>
+          <button v-if="!batchRunning" type="button" class="rounded-lg border border-slate-300 px-4 py-2" @click="runAnalysis(false, true)">{{ t('novel.rerunSelected') }}</button>
+          <button v-if="batchRunning" type="button" class="rounded-lg border border-red-300 px-4 py-2 text-red-700" @click="workspace.stopNovelBatch()">{{ t('novel.stopTask') }}</button>
+          <span v-if="batchRunning" class="text-sm text-slate-600">{{ workspace.novelBatch.value.current }} / {{ workspace.novelBatch.value.total }}</span>
+        </div>
+      </div>
+
+      <div v-if="novelRoles.length" class="rounded-2xl border border-slate-200 bg-white p-5">
+        <h2 class="text-lg font-bold text-slate-900">{{ t('novel.roleVoices') }}</h2>
+        <p class="mt-1 text-sm text-slate-500">{{ t('novel.roleHint') }}</p>
+        <div class="mt-4 grid gap-3 md:grid-cols-2">
+          <div v-for="role in novelRoles" :key="role" class="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 p-3">
+            <strong class="min-w-20 text-sm text-slate-800">{{ role }}</strong>
+            <select :value="activeNovel.roleTimbreIds[role] || ''" :disabled="batchRunning" class="min-w-40 flex-1 rounded-lg border border-slate-300 px-2 py-1.5 text-sm" @change="setRoleTimbre(role, $event)">
+              <option value="">{{ t('novel.unbound') }}</option>
+              <option v-if="activeNovel.roleTimbreIds[role] && !workspace.timbres.value.some(item => item.id === activeNovel.roleTimbreIds[role])" :value="activeNovel.roleTimbreIds[role]">{{ t('novel.missingTimbre') }}</option>
+              <option v-for="timbre in workspace.timbres.value" :key="timbre.id" :value="timbre.id">{{ timbre.name }}</option>
+            </select>
+            <button type="button" :disabled="batchRunning || !activeNovel.roleTimbreIds[role]" class="text-sm font-semibold text-blue-700 disabled:opacity-40" @click="syncRole(role)">{{ t('novel.applyAll') }}</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="rounded-2xl border border-slate-200 bg-white p-5">
         <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
           <h2 class="text-lg font-bold text-slate-900">{{ t('novel.chapterList') }}</h2>
           <input v-model="search" type="search" :placeholder="t('novel.search')" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm sm:w-64">
@@ -166,7 +219,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                 <td class="p-3 text-slate-500">{{ row.index + 1 }}</td>
                 <td class="p-3 font-medium text-slate-800">{{ row.script.name }}</td>
                 <td class="p-3 text-slate-500">{{ row.script.data.rawScript.length }}</td>
-                <td class="p-3 text-slate-500">{{ row.script.data.scriptLines.length ? t('novel.analyzed') : t('novel.pending') }}</td>
+                <td class="p-3 text-slate-500" :title="row.script.data.analysisError || ''">{{ row.script.data.analysisError ? t('novel.failed') : row.script.data.scriptLines.length ? t('novel.analyzed') : t('novel.pending') }}</td>
                 <td class="p-3"><button type="button" class="font-semibold text-blue-700 hover:underline" @click="openChapter(row.id)">{{ t('novel.editChapter') }}</button></td>
               </tr>
             </tbody>

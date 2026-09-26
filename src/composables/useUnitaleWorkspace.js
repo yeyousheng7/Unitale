@@ -17,6 +17,7 @@ import { createAudioDecodeQueue } from '../services/audio/decodeQueue'
 import { matchLibraryId } from '../services/audio/libraryRefs'
 import { requestService } from '../services/api/client'
 import { buildNovelImport } from '../services/novel/novelImport'
+import { analyzeNovelChapter } from '../services/novel/novelAnalysis'
 
 export function useUnitaleWorkspace() {
                   const { locale, t: translateMessage } = useI18n();
@@ -212,6 +213,8 @@ export function useUnitaleWorkspace() {
                           data: { rawScript: '', scriptLines: [], rawAnalysisResult: '', characters: [] } }
                   ]));
                   const novels = ref(/** @type {any[]} */ ([]));
+                  const novelBatch = ref({ running: false, novelId: '', phase: '', current: 0, total: 0, failed: 0 });
+                  let novelBatchController = null;
                   const currentScriptId = ref('default');
                   const novelEditorId = ref(null);
                   let previousStandaloneScriptId = null;
@@ -2706,11 +2709,94 @@ Write the generated narration, dialogue, character names, and image_prompt value
                   };
 
                   const setNovelSelection = (novelId, selectedIds) => {
+                      if (novelBatch.value.running) return;
                       const novel = novels.value.find(item => item.id === novelId);
                       if (!novel) return;
                       const valid = new Set(novel.chapterIds);
                       novel.selectedChapterIds = [...new Set(selectedIds)].filter(id => valid.has(id));
                       triggerAutoSave();
+                  };
+
+                  const setNovelRoleTimbre = (novelId, roleName, timbreId, overwrite = false) => {
+                      if (hasActiveMediaTask() || novelEditorId.value) throw new Error(translateMessage('storage.busy'));
+                      const novel = novels.value.find(item => item.id === novelId);
+                      if (!novel) throw new Error('Novel not found');
+                      const role = roleName.trim();
+                      const timbre = timbres.value.find(item => item.id === timbreId);
+                      if (!role || (timbreId && !timbre)) throw new Error('Timbre not found');
+                      syncCurrentScriptState();
+                      const previous = timbres.value.find(item => item.id === novel.roleTimbreIds[role]);
+                      if (timbreId) novel.roleTimbreIds[role] = timbreId;
+                      else delete novel.roleTimbreIds[role];
+                      for (const script of scriptList.value) {
+                          if (script.novelId !== novelId) continue;
+                          let changed = false;
+                          for (const char of script.data.characters || []) {
+                              if (char.name.trim() !== role) continue;
+                              if (!overwrite && char.voiceFile && char.voiceFile !== previous?.refPath) continue;
+                              char.voiceFile = timbre?.refPath || '';
+                              char.voiceAssetId = timbre?.assetId || '';
+                              changed = true;
+                          }
+                          if (changed) dirtyScriptIds.add(script.id);
+                      }
+                      triggerAutoSave();
+                  };
+
+                  const stopNovelBatch = () => novelBatchController?.abort();
+
+                  const analyzeNovelBatch = async (novelId, { failedOnly = false, rerun = false } = {}) => {
+                      if (hasActiveMediaTask() || novelEditorId.value) throw new Error(translateMessage('storage.busy'));
+                      const novel = novels.value.find(item => item.id === novelId);
+                      if (!novel) throw new Error('Novel not found');
+                      const config = currentConfig.value;
+                      if (!config) throw new Error('Select an LLM model first');
+                      const selected = new Set(novel.selectedChapterIds);
+                      const scripts = novel.chapterIds.map(id => scriptList.value.find(script => script.id === id))
+                          .filter(script => script && selected.has(script.id) && script.data.rawScript.trim() &&
+                              (!failedOnly || script.data.analysisError) && (rerun || !script.data.scriptLines.length));
+                      if (!scripts.length) throw new Error('No chapters need analysis');
+                      const projectId = activeProjectId.value;
+                      const controller = new AbortController();
+                      novelBatchController = controller;
+                      novelBatch.value = { running: true, novelId, phase: 'analysis', current: 0, total: scripts.length, failed: 0 };
+                      activeScriptTasks++;
+                      const copy = value => JSON.parse(JSON.stringify(value));
+                      const options = {
+                          config: copy(config), promptTemplate: useCustomPrompt.value ? customPromptTemplate.value : getDefaultPromptTemplate(),
+                          customPrompt: useCustomPrompt.value, bgImageCount: Math.max(0, Number(bgImageCount.value) || 0),
+                          emotions: copy(emotionPresets.value), sfx: copy(sfxLibrary.value), bgm: copy(bgmLibrary.value),
+                          filters: copy(filterLibrary.value), timbres: copy(timbres.value),
+                          roleTimbreIds: { ...novel.roleTimbreIds }, signal: controller.signal,
+                      };
+                      try {
+                          for (const script of scripts) {
+                              if (controller.signal.aborted || activeProjectId.value !== projectId) break;
+                              try {
+                                  const result = await analyzeNovelChapter(script, options);
+                                  if (controller.signal.aborted || activeProjectId.value !== projectId || !scriptList.value.includes(script)) break;
+                                  if (script.data.scriptLines.length) {
+                                      releaseScriptMedia(script);
+                                      collectOrphansAfterSave = true;
+                                  }
+                                  script.data.rawAnalysisResult = result.rawAnalysisResult;
+                                  script.data.scriptLines = result.scriptLines;
+                                  script.data.characters = result.characters;
+                                  delete script.data.analysisError;
+                              } catch (error) {
+                                  if (controller.signal.aborted || error?.name === 'AbortError') break;
+                                  script.data.analysisError = error.message || String(error);
+                                  novelBatch.value.failed++;
+                              }
+                              dirtyScriptIds.add(script.id);
+                              await saveProjectToDB();
+                              novelBatch.value.current++;
+                          }
+                      } finally {
+                          novelBatch.value.running = false;
+                          novelBatchController = null;
+                          activeScriptTasks--;
+                      }
                   };
 
                   const openNovelChapter = (id) => {
@@ -3786,7 +3872,10 @@ Write the generated narration, dialogue, character names, and image_prompt value
                                       id = existing.id;
                                       volume = existing.volume ?? 1.0;
                                   } else {
-                                      const matchingTimbre = timbres.value.find(t => t.name === rName);
+                                      const currentNovel = novels.value.find(novel => novel.id === scriptList.value.find(script => script.id === currentScriptId.value)?.novelId);
+                                      const matchingTimbre = currentNovel
+                                          ? timbres.value.find(t => t.id === currentNovel.roleTimbreIds[rName.trim()])
+                                          : timbres.value.find(t => t.name === rName);
                                       if (matchingTimbre) {
                                           voiceFile = matchingTimbre.refPath;
                                           voiceAssetId = matchingTimbre.assetId || '';
@@ -4193,7 +4282,8 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       lineRefs,
                       scriptListContainer,
                       scriptList, novels, currentScriptId, switchScript, addScript, deleteScriptTab,
-                      novelEditorId, commitNovelImport, setNovelSelection, openNovelChapter, closeNovelChapter,
+                      novelEditorId, novelBatch, commitNovelImport, setNovelSelection, setNovelRoleTimbre,
+                      analyzeNovelBatch, stopNovelBatch, openNovelChapter, closeNovelChapter,
                       editingScriptId, startEditingScript, stopEditingScript, scriptNameInputRefs,
 
                       generationLanguage,
