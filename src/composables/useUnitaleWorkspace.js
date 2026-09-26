@@ -2773,6 +2773,14 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       triggerAutoSave();
                   };
 
+                  const setChapterVoiceAsNovelDefault = (characterId) => {
+                      const chapter = scriptList.value.find(script => script.id === novelEditorId.value && script.kind === 'novelChapter');
+                      const character = characters.value.find(item => item.id === characterId);
+                      const timbre = timbres.value.find(item => item.refPath === character?.voiceFile);
+                      if (!chapter?.novelId || !character?.name?.trim() || !timbre) throw new Error('Select a library voice first');
+                      setNovelRoleTimbre(chapter.novelId, character.name, timbre.id);
+                  };
+
                   const stopNovelBatch = () => novelBatchController?.abort();
 
                   const analyzeNovelBatch = async (novelId, chapterIds, { failedOnly = false, rerun = false } = {}) => {
@@ -2965,6 +2973,28 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       if (currentScriptId.value !== id) { previousStandaloneScriptId = null; return false; }
                       novelEditorId.value = id;
                       return true;
+                  };
+
+                  const switchNovelChapter = (id) => {
+                      const current = scriptList.value.find(script => script.id === novelEditorId.value && script.kind === 'novelChapter');
+                      const target = scriptList.value.find(script => script.id === id && script.kind === 'novelChapter' && script.novelId === current?.novelId);
+                      if (!current || !target || hasActiveMediaTask()) return false;
+                      if (current.id === id) return true;
+                      switchScript(id);
+                      if (currentScriptId.value !== id) return false;
+                      novelEditorId.value = id;
+                      return true;
+                  };
+
+                  const renameNovelChapter = (id, title) => {
+                      const chapter = scriptList.value.find(script => script.id === id && script.kind === 'novelChapter' && id === novelEditorId.value);
+                      if (!chapter || hasActiveMediaTask()) throw new Error(translateMessage('storage.busy'));
+                      const nextTitle = String(title).trim();
+                      if (!nextTitle) throw new Error('Chapter title cannot be empty');
+                      if (chapter.name === nextTitle) return;
+                      chapter.name = nextTitle;
+                      dirtyScriptIds.add(id);
+                      triggerAutoSave();
                   };
 
                   const closeNovelChapter = () => {
@@ -4447,8 +4477,9 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       scriptListContainer,
                       scriptList, novels, currentScriptId, switchScript, addScript, deleteScriptTab,
                       novelEditorId, novelBatch, commitNovelImport, renameNovel, deleteNovel,
-                      setNovelRoleTimbre, navigateToTab,
-                      analyzeNovelBatch, generateNovelBatch, exportNovelBatch, stopNovelBatch, openNovelChapter, closeNovelChapter,
+                      setNovelRoleTimbre, setChapterVoiceAsNovelDefault, navigateToTab,
+                      analyzeNovelBatch, generateNovelBatch, exportNovelBatch, stopNovelBatch, openNovelChapter,
+                      switchNovelChapter, renameNovelChapter, closeNovelChapter,
                       editingScriptId, startEditingScript, stopEditingScript, scriptNameInputRefs,
 
                       generationLanguage,

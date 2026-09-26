@@ -12,6 +12,7 @@ import ScriptWorkspace from '../script/ScriptWorkspace.vue'
 const workspace = useWorkspace()
 const { t } = useI18n()
 const fileInput = ref<HTMLInputElement | null>(null)
+const chapterTableScroll = ref<HTMLElement | null>(null)
 const file = ref<File | null>(null)
 const encoding = ref('auto')
 const parsed = ref<ParsedTxtNovel | null>(null)
@@ -23,6 +24,7 @@ const loading = ref(false)
 const importing = ref(false)
 const error = ref('')
 const importNotice = ref('')
+const importNoticeNovelId = ref('')
 let parseGeneration = 0
 
 const activeNovelId = ref('')
@@ -80,10 +82,14 @@ const visiblePreviewChapters = computed(() => (parsed.value?.chapters || [])
   .slice(previewPage.value * previewPageSize, (previewPage.value + 1) * previewPageSize)
   .map((chapter, offset) => ({ chapter, index: previewPage.value * previewPageSize + offset })))
 const editorChapter = computed(() => workspace.scriptList.value.find(script => script.id === workspace.novelEditorId.value))
-const editorVoiceChoices = computed(() => workspace.characters.value.flatMap((character: any) => {
-  const timbre = workspace.timbres.value.find(item => item.refPath === character.voiceFile)
-  return timbre ? [{ role: String(character.name || '').trim(), timbre }] : []
-}).filter((item: any) => item.role))
+const editorIndex = computed(() => activeNovel.value?.chapterIds.indexOf(workspace.novelEditorId.value || '') ?? -1)
+const previousChapterId = computed(() => editorIndex.value > 0 ? activeNovel.value?.chapterIds[editorIndex.value - 1] : null)
+const nextChapterId = computed(() => editorIndex.value >= 0 ? activeNovel.value?.chapterIds[editorIndex.value + 1] : null)
+const chapterTitleInput = ref<HTMLInputElement | null>(null)
+const editingChapterTitle = ref(false)
+const chapterTitleDraft = ref('')
+let savedTableScroll = 0
+let savedWindowScroll = 0
 const selectedRows = computed(() => chapterRows.value.filter((row: any) => selectedIds.value.has(row.id)))
 const selectedAnalysisFailures = computed(() => selectedRows.value.filter((row: any) => chapterProgress(row.script).analysis === 'failed').length)
 const selectedTtsFailures = computed(() => selectedRows.value.reduce((count: number, row: any) => count + chapterProgress(row.script).failed, 0))
@@ -116,6 +122,7 @@ watch(pageSize, () => { page.value = 0 })
 watch(activeNovelId, () => {
   if (novelMenu.value) novelMenu.value.open = false
   if (renamingNovelId.value && renamingNovelId.value !== activeNovelId.value) cancelNovelRename()
+  if (importNoticeNovelId.value !== activeNovelId.value) importNotice.value = ''
   search.value = ''
   statusFilter.value = 'all'
   novelView.value = 'chapters'
@@ -191,6 +198,7 @@ async function confirmImport() {
   try {
     const id = await workspace.commitNovelImport(file.value.name, parsed.value)
     activeNovelId.value = id
+    importNoticeNovelId.value = id
     importNotice.value = t('novel.importedNotice', { count: parsed.value.chapters.length })
     resetPreview()
   } catch (cause) { error.value = String(cause) }
@@ -282,19 +290,44 @@ function syncRole(role: string) {
   try { workspace.setNovelRoleTimbre(activeNovel.value.id, role, activeNovel.value.roleTimbreIds[role] || '', true) }
   catch (cause) { error.value = String(cause) }
 }
-function applyChapterVoice(role: string, timbreId: string) {
-  if (!editorChapter.value?.novelId) return
-  try { workspace.setNovelRoleTimbre(editorChapter.value.novelId, role, timbreId) }
-  catch (cause) { error.value = String(cause) }
-}
 function openChapter(id: string) {
-  if (!workspace.openNovelChapter(id)) error.value = t('novel.busy')
+  savedTableScroll = chapterTableScroll.value?.scrollTop || 0
+  savedWindowScroll = window.scrollY
+  if (!workspace.openNovelChapter(id)) { error.value = t('novel.busy'); return }
+  error.value = ''
+  void nextTick(() => window.scrollTo({ top: 0 }))
 }
 function closeChapter() {
-  if (!workspace.closeNovelChapter()) error.value = t('novel.busy')
+  if (editingChapterTitle.value) { saveChapterRename(); if (editingChapterTitle.value) return }
+  if (!workspace.closeNovelChapter()) { error.value = t('novel.busy'); return }
+  editingChapterTitle.value = false
+  error.value = ''
+  void nextTick(() => {
+    if (chapterTableScroll.value) chapterTableScroll.value.scrollTop = savedTableScroll
+    window.scrollTo({ top: savedWindowScroll })
+  })
 }
-function onKeydown(event: KeyboardEvent) {
-  if (event.key === 'Escape' && workspace.novelEditorId.value) { event.preventDefault(); closeChapter() }
+function switchChapter(id: string | null | undefined) {
+  if (editingChapterTitle.value) { saveChapterRename(); if (editingChapterTitle.value) return }
+  if (!id || !workspace.switchNovelChapter(id)) { error.value = t('novel.busy'); return }
+  editingChapterTitle.value = false
+  error.value = ''
+  void nextTick(() => window.scrollTo({ top: 0 }))
+}
+function startChapterRename() {
+  if (!editorChapter.value) return
+  chapterTitleDraft.value = editorChapter.value.name
+  editingChapterTitle.value = true
+  void nextTick(() => { chapterTitleInput.value?.focus(); chapterTitleInput.value?.select() })
+}
+function cancelChapterRename() { editingChapterTitle.value = false; chapterTitleDraft.value = '' }
+function saveChapterRename() {
+  if (!editingChapterTitle.value || !editorChapter.value) return
+  try {
+    workspace.renameNovelChapter(editorChapter.value.id, chapterTitleDraft.value)
+    cancelChapterRename()
+    error.value = ''
+  } catch (cause) { error.value = String(cause) }
 }
 function onDocumentPointerDown(event: PointerEvent) {
   for (const menu of [novelMenu.value, chapterSelectionMenu.value, batchActionsMenu.value]) {
@@ -302,12 +335,10 @@ function onDocumentPointerDown(event: PointerEvent) {
   }
 }
 onMounted(() => {
-  window.addEventListener('keydown', onKeydown)
   document.addEventListener('pointerdown', onDocumentPointerDown)
 })
 onBeforeUnmount(() => {
   if (selectionNoticeTimer) clearTimeout(selectionNoticeTimer)
-  window.removeEventListener('keydown', onKeydown)
   document.removeEventListener('pointerdown', onDocumentPointerDown)
   if (workspace.novelEditorId.value) workspace.closeNovelChapter()
 })
@@ -326,7 +357,7 @@ onBeforeUnmount(() => {
 
     <template v-if="activeNovel">
       <div v-show="!workspace.novelEditorId.value" class="space-y-4">
-        <p v-if="importNotice" role="status" class="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">{{ importNotice }}</p>
+        <p v-if="importNotice && importNoticeNovelId === activeNovel.id" role="status" class="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">{{ importNotice }}</p>
         <div class="rounded-2xl border border-slate-200 bg-white p-5">
           <div class="flex flex-wrap items-center justify-between gap-4">
             <div class="min-w-0">
@@ -401,7 +432,7 @@ onBeforeUnmount(() => {
             </details>
           </div>
           <p v-if="selectionNotice" role="status" class="mb-3 text-sm text-amber-700">{{ selectionNotice }}</p>
-          <div class="max-h-[62vh] overflow-auto rounded-lg border border-slate-200">
+          <div ref="chapterTableScroll" class="max-h-[62vh] overflow-auto rounded-lg border border-slate-200">
             <table class="w-full min-w-[740px] text-left text-sm">
               <thead class="sticky top-0 z-10 bg-slate-50 text-slate-500">
                 <tr>
@@ -420,7 +451,7 @@ onBeforeUnmount(() => {
                     <span :class="chapterProgress(row.script).analysis === 'failed' ? 'text-red-700' : chapterProgress(row.script).analysis === 'analyzed' ? 'text-green-700' : 'text-slate-500'">{{ chapterProgress(row.script).analysis === 'failed' ? t('novel.analysisFailed') : chapterProgress(row.script).analysis === 'analyzed' ? t('novel.analyzed') : t('novel.pending') }}</span>
                   </td>
                   <td class="p-3">
-                    <span v-if="chapterProgress(row.script).audio === 'none'" class="text-slate-400">—</span>
+                    <span v-if="chapterProgress(row.script).audio === 'none'" class="text-slate-400">{{ chapterProgress(row.script).analysis === 'analyzed' ? t('novel.noDialogue') : '—' }}</span>
                     <span v-else :class="chapterProgress(row.script).audio === 'complete' ? 'text-green-700' : 'text-slate-600'">{{ chapterProgress(row.script).audio === 'complete' ? t('novel.audioComplete') : chapterProgress(row.script).audio === 'pending' ? t('novel.audioPending') : t('novel.audioPartial') }} {{ chapterProgress(row.script).generated }}/{{ chapterProgress(row.script).total }}</span>
                     <span v-if="chapterProgress(row.script).failed" class="ml-1 text-red-700">{{ t('novel.failedLines', { count: chapterProgress(row.script).failed }) }}</span>
                   </td>
@@ -548,15 +579,23 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-if="workspace.novelEditorId.value" class="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/55 p-2 sm:p-5">
-      <div role="dialog" aria-modal="true" :aria-label="t('novel.editChapter')" class="flex max-h-[94vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-xl">
-        <header class="flex items-center justify-between border-b border-slate-200 px-5 py-4"><h2 class="font-bold text-slate-900">{{ t('novel.editChapter') }} · {{ editorChapter?.name }}</h2><button type="button" class="rounded-lg border border-slate-300 px-3 py-1.5" @click="closeChapter">{{ t('novel.close') }}</button></header>
-        <div v-if="editorVoiceChoices.length" class="flex flex-wrap items-center gap-2 border-b border-slate-200 px-5 py-2 text-sm">
-          <span class="text-slate-500">{{ t('novel.chapterVoiceSync') }}</span>
-          <button v-for="item in editorVoiceChoices" :key="item.role" type="button" class="rounded-full border border-blue-200 px-3 py-1 text-blue-700 hover:bg-blue-50" @click="applyChapterVoice(item.role, item.timbre.id)">{{ item.role }} · {{ item.timbre.name }}</button>
+    <div v-if="workspace.novelEditorId.value && activeNovel" class="space-y-4">
+      <div class="rounded-2xl border border-slate-200 bg-white px-5 py-4">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="flex min-w-0 flex-wrap items-center gap-3">
+            <button type="button" class="font-medium text-blue-700" @click="closeChapter">← {{ t('novel.backToChapters') }}</button>
+            <span class="text-slate-300">/</span><span class="text-sm text-slate-500">{{ activeNovel.title }}</span>
+            <input v-if="editingChapterTitle" ref="chapterTitleInput" v-model="chapterTitleDraft" type="text" :aria-label="t('novel.chapterTitle')" class="min-w-48 rounded-lg border border-blue-400 px-2 py-1 font-semibold" @keydown.enter.stop.prevent="saveChapterRename" @keydown.esc.stop.prevent="cancelChapterRename" @blur="saveChapterRename">
+            <strong v-else class="min-w-0 text-slate-900">{{ editorChapter?.name }}</strong>
+            <button v-if="!editingChapterTitle" type="button" class="text-sm text-blue-700" @click="startChapterRename">{{ t('novel.renameChapter') }}</button>
+          </div>
+          <div class="flex items-center gap-2 text-sm">
+            <button type="button" :disabled="!previousChapterId" class="rounded-lg border border-slate-300 px-3 py-2 disabled:opacity-40" @click="switchChapter(previousChapterId)">{{ t('novel.previousChapter') }}</button>
+            <button type="button" :disabled="!nextChapterId" class="rounded-lg border border-slate-300 px-3 py-2 disabled:opacity-40" @click="switchChapter(nextChapterId)">{{ t('novel.nextChapter') }}</button>
+          </div>
         </div>
-        <div class="min-h-0 overflow-auto bg-slate-50 p-4"><ScriptWorkspace embedded /></div>
       </div>
+      <ScriptWorkspace embedded />
     </div>
   </section>
 </template>

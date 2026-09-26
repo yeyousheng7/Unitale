@@ -1,12 +1,29 @@
 <script lang="ts">
-import { computed, defineComponent } from 'vue'
+import { computed, defineComponent, ref } from 'vue'
 import { useWorkspace } from '../../context/workspace'
+import { useI18n } from '../../i18n'
 
 export default defineComponent({
   props: { view: { type: String, required: true } },
   emits: ['edit-script', 'edit-line', 'edit-characters'],
   setup(_props, { emit }) {
     const workspace = useWorkspace()
+    const { t } = useI18n()
+    const defaultVoiceError = ref('')
+    const defaultVoiceErrorId = ref('')
+    const novelChapter = computed(() => workspace.scriptList.value.find(script => script.id === workspace.novelEditorId.value))
+    const libraryVoice = (char: { voiceFile?: string }) => workspace.timbres.value.find(item => item.refPath === char.voiceFile)
+    const isBookDefault = (char: { name: string; voiceFile?: string }) => {
+      const novel = workspace.novels.value.find(item => item.id === novelChapter.value?.novelId)
+      const timbre = libraryVoice(char)
+      return !!novel && !!timbre && novel.roleTimbreIds[char.name.trim()] === timbre.id
+    }
+    const setBookDefault = (char: { id: string }) => {
+      defaultVoiceError.value = ''
+      defaultVoiceErrorId.value = char.id
+      try { workspace.setChapterVoiceAsNovelDefault(char.id) }
+      catch { defaultVoiceError.value = t('novel.defaultVoiceFailed') }
+    }
     const dialogueRows = computed(() => workspace.scriptLines.value
       .map((line, index) => ({
         line,
@@ -24,6 +41,7 @@ export default defineComponent({
       pendingRows,
       generatedCount,
       missingVoiceCount,
+      novelChapter, libraryVoice, isBookDefault, setBookDefault, defaultVoiceError, defaultVoiceErrorId,
       openScript: () => emit('edit-script'),
       openLine: (index: number) => emit('edit-line', index),
       openCharacters: () => emit('edit-characters'),
@@ -178,6 +196,12 @@ export default defineComponent({
                                                 clip-rule="evenodd" />
                                         </svg>
                                     </button>
+                                </div>
+                                <div v-if="novelChapter?.novelId" class="mt-2 text-xs">
+                                    <span v-if="isBookDefault(char)" class="text-green-700">{{ $t('novel.currentDefault') }}</span>
+                                    <button v-else type="button" :disabled="!char.name?.trim() || !libraryVoice(char) || isGeneratingAll || isSequencePlaying" class="font-medium text-blue-700 disabled:text-slate-400" @click="setBookDefault(char)">{{ $t('novel.useAsDefault') }}</button>
+                                    <p v-if="char.voiceFile && !libraryVoice(char)" class="mt-1 text-slate-500">{{ $t('novel.defaultRequiresLibraryVoice') }}</p>
+                                    <p v-if="defaultVoiceError && defaultVoiceErrorId === char.id" role="alert" class="mt-1 text-red-700">{{ defaultVoiceError }}</p>
                                 </div>
                             </div>
                             <div class="mt-2 pt-2 border-t border-slate-100">

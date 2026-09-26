@@ -224,12 +224,21 @@ test('novel import commits all chapters and floating edit restores the standalon
     assert.equal(afterEdit.currentScriptId, 'default')
     assert.equal(afterEdit.scriptList.find(item => item.id === novel.chapterIds[0]).data.rawScript, '已修改的内容。')
     assert.equal(w.openNovelChapter(novel.chapterIds[1]), true)
+    w.renameNovelChapter(novel.chapterIds[1], '第二章 新标题')
+    assert.equal(w.switchNovelChapter(novel.chapterIds[0]), true)
+    assert.equal(w.currentScriptId.value, novel.chapterIds[0])
+    assert.equal(w.switchNovelChapter(novel.chapterIds[1]), true)
     assert.equal(w.navigateToTab('script'), true)
     assert.equal(w.currentScriptId.value, 'default')
     assert.equal(w.novelEditorId.value, null)
+    await sleep(1150)
+    assert.equal((await loadWorkspaceProject(projectId)).scriptList.find(item => item.id === novel.chapterIds[1]).name, '第二章 新标题')
     const unselectedId = await w.commitNovelImport('titles.txt', { encoding: 'utf-8', intro: null,
       chapters: [{ title: '第一章', content: '' }] })
     assert.deepEqual(w.novels.value.find(item => item.id === unselectedId).selectedChapterIds, [])
+    assert.equal(w.openNovelChapter(novel.chapterIds[0]), true)
+    assert.equal(w.switchNovelChapter(w.novels.value.find(item => item.id === unselectedId).chapterIds[0]), false)
+    assert.equal(w.closeNovelChapter(), true)
   } finally { unmount() }
 })
 
@@ -254,7 +263,8 @@ test('novel voice mapping updates inactive chapters and persists without affecti
     const originalVoice = await indexedDbAssetStore.put(new Blob(['old voice']), { projectId, kind: 'voice' })
     w.timbres.value.push({ id: 'shared-voice', name: '男声', refPath: '/server/shared.wav', assetId: originalVoice.id })
     assert.equal(w.openNovelChapter(first.chapterIds[0]), true)
-    w.setNovelRoleTimbre(firstId, ' 小明 ', 'shared-voice')
+    w.characters.value[0].voiceFile = '/server/shared.wav'
+    w.setChapterVoiceAsNovelDefault(w.characters.value[0].id)
     assert.equal(w.closeNovelChapter(), true)
     await sleep(1150)
     const stored = await loadWorkspaceProject(projectId)
