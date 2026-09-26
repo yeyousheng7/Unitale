@@ -32,13 +32,18 @@ test('empty fallback is rejected but a heading-only chapter remains importable',
   assert.equal(buildNovelImport('title.txt', headingOnly).novel.introScriptId, undefined)
 })
 
-test('whole-book preview confirmation stores front matter and starts with no processing selection', () => {
+test('whole-book preview confirmation stores front matter and starts with no processing selection', async () => {
   const parsed = { encoding: 'utf-8', intro: { title: '简介', content: '卷首。\n' },
     chapters: [{ title: '第一章', content: '正文。' }] }
   const { novel, scripts } = buildNovelImport('book.txt', parsed)
   assert.equal(scripts.length, 2)
   assert.equal(novel.introScriptId, scripts[0].id)
   assert.deepEqual(novel.selectedChapterIds, [])
+  const projectId = `front-matter-${crypto.randomUUID()}`
+  await saveWorkspaceProject({ characters: [], currentScriptId: scripts[0].id, timestamp: Date.now(),
+    scriptList: scripts, novels: [novel],
+    libraries: { sfx: [], bgm: [], timbres: [], filters: [], emotions: [] } }, undefined, projectId)
+  assert.equal((await loadWorkspaceProject(projectId)).novels[0].introScriptId, scripts[0].id)
 })
 
 test('one thousand chapters with millions of characters keep order through storage', async t => {

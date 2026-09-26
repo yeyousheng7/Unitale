@@ -119,6 +119,7 @@ watch([search, statusFilter], () => {
   }
 })
 watch(pageSize, () => { page.value = 0 })
+watch(pageCount, count => { if (page.value >= count) page.value = count - 1 })
 watch(activeNovelId, () => {
   if (novelMenu.value) novelMenu.value.open = false
   if (renamingNovelId.value && renamingNovelId.value !== activeNovelId.value) cancelNovelRename()
@@ -455,7 +456,7 @@ onBeforeUnmount(() => {
                     <span v-else :class="chapterProgress(row.script).audio === 'complete' ? 'text-green-700' : 'text-slate-600'">{{ chapterProgress(row.script).audio === 'complete' ? t('novel.audioComplete') : chapterProgress(row.script).audio === 'pending' ? t('novel.audioPending') : t('novel.audioPartial') }} {{ chapterProgress(row.script).generated }}/{{ chapterProgress(row.script).total }}</span>
                     <span v-if="chapterProgress(row.script).failed" class="ml-1 text-red-700">{{ t('novel.failedLines', { count: chapterProgress(row.script).failed }) }}</span>
                   </td>
-                  <td class="p-3"><button type="button" class="font-semibold text-blue-700 hover:underline" @click="openChapter(row.id)">{{ t('novel.openChapter') }}</button></td>
+                  <td class="p-3"><button type="button" :disabled="batchRunning" :title="batchRunning ? t('novel.busy') : undefined" class="font-semibold text-blue-700 hover:underline disabled:cursor-not-allowed disabled:opacity-40" @click="openChapter(row.id)">{{ t('novel.openChapter') }}</button></td>
                 </tr>
                 <tr v-if="!visibleRows.length"><td colspan="7" class="p-8 text-center text-slate-500">{{ t('novel.noMatchingChapters') }}</td></tr>
               </tbody>
