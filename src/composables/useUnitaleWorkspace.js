@@ -18,6 +18,7 @@ import { matchLibraryId } from '../services/audio/libraryRefs'
 import { requestService } from '../services/api/client'
 import { buildNovelImport } from '../services/novel/novelImport'
 import { analyzeNovelChapter } from '../services/novel/novelAnalysis'
+import { missingNovelVoices, synthesizeNovelLine } from '../services/novel/novelTts'
 
 export function useUnitaleWorkspace() {
                   const { locale, t: translateMessage } = useI18n();
@@ -2799,6 +2800,68 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       }
                   };
 
+                  const generateNovelBatch = async (novelId, { failedOnly = false, rerun = false } = {}) => {
+                      if (hasActiveMediaTask() || novelEditorId.value) throw new Error(translateMessage('storage.busy'));
+                      const novel = novels.value.find(item => item.id === novelId);
+                      if (!novel) throw new Error('Novel not found');
+                      const config = currentTtsConfig.value;
+                      if (!config) throw new Error('Select a TTS service first');
+                      const selected = new Set(novel.selectedChapterIds);
+                      const chapters = novel.chapterIds.map(id => scriptList.value.find(script => script.id === id))
+                          .filter(script => script && selected.has(script.id) && script.data.scriptLines.length);
+                      const targets = chapters.flatMap(script => script.data.scriptLines
+                          .filter(line => line.type === 'dialogue' && line.text?.trim() && (failedOnly || rerun || !line.audioAssetId) &&
+                              (!failedOnly || line.ttsError))
+                          .map(line => ({ script, line })));
+                      if (!targets.length) throw new Error('No dialogue needs audio');
+                      const missing = [...new Set(chapters.flatMap(script => missingNovelVoices(
+                          targets.filter(target => target.script === script).map(target => target.line), script.data.characters)))];
+                      if (missing.length) throw new Error(`请先绑定角色音色：${missing.join('、')}`);
+                      const projectId = activeProjectId.value;
+                      const store = activeAssetStore;
+                      const controller = new AbortController();
+                      novelBatchController = controller;
+                      novelBatch.value = { running: true, novelId, phase: 'tts', current: 0, total: targets.length, failed: 0 };
+                      activeScriptTasks++;
+                      const copy = value => JSON.parse(JSON.stringify(value));
+                      const emotions = copy(emotionPresets.value);
+                      const timbreSnapshot = copy(timbres.value);
+                      try {
+                          for (const { script, line } of targets) {
+                              if (controller.signal.aborted || activeProjectId.value !== projectId || activeAssetStore !== store) break;
+                              try {
+                                  const blob = await synthesizeNovelLine({ line, characters: script.data.characters,
+                                      emotions, timbres: timbreSnapshot, config: copy(config), store, signal: controller.signal });
+                                  if (controller.signal.aborted) break;
+                                  const saved = await store.put(blob, { projectId, kind: 'dialogue' });
+                                  if (controller.signal.aborted || isWorkspaceUnmounted || activeProjectId.value !== projectId ||
+                                      activeAssetStore !== store || !scriptList.value.includes(script) || !script.data.scriptLines.includes(line)) {
+                                      await store.remove(saved.id);
+                                      break;
+                                  }
+                                  if (line.audioAssetId) collectOrphansAfterSave = true;
+                                  releaseLineMedia(script.id, line);
+                                  line.audioAssetId = saved.id;
+                                  line.audioUrl = '';
+                                  line.trimStart = 0;
+                                  line.trimEnd = 1;
+                                  delete line.ttsError;
+                              } catch (error) {
+                                  if (controller.signal.aborted || error?.name === 'AbortError') break;
+                                  line.ttsError = error.message || String(error);
+                                  novelBatch.value.failed++;
+                              }
+                              dirtyScriptIds.add(script.id);
+                              await saveProjectToDB();
+                              novelBatch.value.current++;
+                          }
+                      } finally {
+                          novelBatch.value.running = false;
+                          novelBatchController = null;
+                          activeScriptTasks--;
+                      }
+                  };
+
                   const openNovelChapter = (id) => {
                       const chapter = scriptList.value.find(script => script.id === id && script.kind === 'novelChapter');
                       if (!chapter || hasActiveMediaTask() || novelEditorId.value) return false;
@@ -4283,7 +4346,7 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       scriptListContainer,
                       scriptList, novels, currentScriptId, switchScript, addScript, deleteScriptTab,
                       novelEditorId, novelBatch, commitNovelImport, setNovelSelection, setNovelRoleTimbre,
-                      analyzeNovelBatch, stopNovelBatch, openNovelChapter, closeNovelChapter,
+                      analyzeNovelBatch, generateNovelBatch, stopNovelBatch, openNovelChapter, closeNovelChapter,
                       editingScriptId, startEditingScript, stopEditingScript, scriptNameInputRefs,
 
                       generationLanguage,

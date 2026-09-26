@@ -253,3 +253,46 @@ test('novel voice mapping updates inactive chapters and persists without affecti
     assert.equal(stored.scriptList.find(item => item.id === second.chapterIds[0]).data.characters[0].voiceFile, '')
   } finally { unmount() }
 })
+
+test('novel TTS stops after completed lines and restores saved audio on refresh', async () => {
+  const projectId = `novel-tts-${Date.now()}`
+  await saveWorkspaceProject(snapshot(projectId), undefined, projectId)
+  await setActiveProjectId(projectId)
+  const { workspace: w, unmount } = mountWorkspace()
+  const originalFetch = globalThis.fetch
+  try {
+    await sleep(550)
+    const novelId = await w.commitNovelImport('voice.txt', { encoding: 'utf-8', intro: null,
+      chapters: [{ title: '第一章', content: '甲说了两句。' }] }, [0], false)
+    const chapterId = w.novels.value.find(item => item.id === novelId).chapterIds[0]
+    assert.equal(w.openNovelChapter(chapterId), true)
+    w.characters.value = [{ id: 'speaker', name: '甲', voiceFile: '/server/voice.wav', voiceAssetId: '' }]
+    w.scriptLines.value = [
+      { id: 'line-1', type: 'dialogue', role: '甲', text: '第一句', audioUrl: '' },
+      { id: 'line-2', type: 'dialogue', role: '甲', text: '第二句', audioUrl: '' },
+    ]
+    assert.equal(w.closeNovelChapter(), true)
+    w.ttsConfigs.value = [{ id: 'tts', baseUrl: 'https://tts.example' }]
+    w.currentTtsConfigId.value = 'tts'
+    const secondEntered = deferred()
+    const releaseSecond = deferred()
+    let calls = 0
+    globalThis.fetch = async url => {
+      if (!url.includes('/v2/synthesize')) throw new Error(`Unexpected URL: ${url}`)
+      calls++
+      if (calls === 2) { secondEntered.resolve(); await releaseSecond.promise }
+      return new Response(new Blob([`audio-${calls}`], { type: 'audio/wav' }), { status: 200 })
+    }
+    const batch = w.generateNovelBatch(novelId)
+    await within(secondEntered.promise, 'second chapter line')
+    assert.equal(w.currentScriptId.value, 'default')
+    w.stopNovelBatch()
+    releaseSecond.resolve()
+    await batch
+    const stored = await loadWorkspaceProject(projectId)
+    const lines = stored.scriptList.find(item => item.id === chapterId).data.scriptLines
+    assert.ok(lines[0].audioAssetId)
+    assert.equal(lines[1].audioAssetId, undefined)
+    assert.equal(await (await indexedDbAssetStore.get(lines[0].audioAssetId)).text(), 'audio-1')
+  } finally { globalThis.fetch = originalFetch; unmount() }
+})

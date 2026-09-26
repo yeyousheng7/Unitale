@@ -40,6 +40,8 @@ const selectedIds = computed(() => new Set<string>(activeNovel.value?.selectedCh
 const previewChapter = computed(() => previewIndex.value === -1 ? parsed.value?.intro : parsed.value?.chapters[previewIndex.value])
 const editorChapter = computed(() => workspace.scriptList.value.find(script => script.id === workspace.novelEditorId.value))
 const analysisFailures = computed(() => chapterRows.value.filter((row: any) => !!row.script.data.analysisError).length)
+const ttsFailures = computed(() => chapterRows.value.reduce((count: number, row: any) =>
+  count + row.script.data.scriptLines.filter((line: any) => !!line.ttsError).length, 0))
 const novelRoles = computed<string[]>(() => [...new Set<string>(chapterRows.value.flatMap((row: any) =>
   (row.script.data.characters || []).map((character: any) => String(character.name || '').trim())).filter(Boolean))].sort())
 const batchRunning = computed(() => workspace.novelBatch.value.running && workspace.novelBatch.value.novelId === activeNovel.value?.id)
@@ -116,6 +118,13 @@ async function runAnalysis(failedOnly = false, rerun = false) {
   if (rerun && !window.confirm(t('novel.rerunConfirm'))) return
   error.value = ''
   try { await workspace.analyzeNovelBatch(activeNovel.value.id, { failedOnly, rerun }) }
+  catch (cause) { error.value = String(cause) }
+}
+async function runTts(failedOnly = false, rerun = false) {
+  if (!activeNovel.value) return
+  if (rerun && !window.confirm(t('novel.regenerateConfirm'))) return
+  error.value = ''
+  try { await workspace.generateNovelBatch(activeNovel.value.id, { failedOnly, rerun }) }
   catch (cause) { error.value = String(cause) }
 }
 function setRoleTimbre(role: string, event: Event, overwrite = false) {
@@ -206,6 +215,18 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
       </div>
 
       <div class="rounded-2xl border border-slate-200 bg-white p-5">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div><h2 class="text-lg font-bold text-slate-900">{{ t('novel.batchTts') }}</h2><p class="text-sm text-slate-500">{{ t('novel.ttsHint') }}</p></div>
+          <span v-if="ttsFailures" class="rounded-full bg-red-50 px-3 py-1 text-sm text-red-700">{{ t('novel.failed') }} {{ ttsFailures }}</span>
+        </div>
+        <div class="mt-4 flex flex-wrap gap-2">
+          <button type="button" :disabled="batchRunning" class="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white disabled:opacity-40" @click="runTts()">{{ t('novel.generateMissing') }}</button>
+          <button type="button" :disabled="batchRunning" class="rounded-lg border border-slate-300 px-4 py-2 disabled:opacity-40" @click="runTts(true)">{{ t('novel.retryTts') }}</button>
+          <button type="button" :disabled="batchRunning" class="rounded-lg border border-slate-300 px-4 py-2 disabled:opacity-40" @click="runTts(false, true)">{{ t('novel.regenerateAll') }}</button>
+        </div>
+      </div>
+
+      <div class="rounded-2xl border border-slate-200 bg-white p-5">
         <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
           <h2 class="text-lg font-bold text-slate-900">{{ t('novel.chapterList') }}</h2>
           <input v-model="search" type="search" :placeholder="t('novel.search')" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm sm:w-64">
@@ -219,7 +240,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                 <td class="p-3 text-slate-500">{{ row.index + 1 }}</td>
                 <td class="p-3 font-medium text-slate-800">{{ row.script.name }}</td>
                 <td class="p-3 text-slate-500">{{ row.script.data.rawScript.length }}</td>
-                <td class="p-3 text-slate-500" :title="row.script.data.analysisError || ''">{{ row.script.data.analysisError ? t('novel.failed') : row.script.data.scriptLines.length ? t('novel.analyzed') : t('novel.pending') }}</td>
+                <td class="p-3 text-slate-500" :title="row.script.data.analysisError || row.script.data.scriptLines.find((line: any) => line.ttsError)?.ttsError || ''">{{ row.script.data.analysisError || row.script.data.scriptLines.some((line: any) => line.ttsError) ? t('novel.failed') : row.script.data.scriptLines.some((line: any) => line.type === 'dialogue' && line.audioAssetId) ? t('novel.voiced') : row.script.data.scriptLines.length ? t('novel.analyzed') : t('novel.pending') }}</td>
                 <td class="p-3"><button type="button" class="font-semibold text-blue-700 hover:underline" @click="openChapter(row.id)">{{ t('novel.editChapter') }}</button></td>
               </tr>
             </tbody>
