@@ -16,6 +16,8 @@ const parsed = ref<ParsedTxtNovel | null>(null)
 const selectedIndexes = ref<number[]>([])
 const includeIntro = ref(false)
 const previewIndex = ref(0)
+const previewPage = ref(0)
+const previewPageSize = ref(50)
 const loading = ref(false)
 const importing = ref(false)
 const error = ref('')
@@ -25,7 +27,7 @@ const activeNovelId = ref('')
 const activeNovel = computed(() => workspace.novels.value.find(novel => novel.id === activeNovelId.value) || workspace.novels.value[0])
 const search = ref('')
 const page = ref(0)
-const pageSize = 50
+const pageSize = ref(50)
 const chapterRows = computed(() => {
   const novel = activeNovel.value
   if (!novel) return []
@@ -35,10 +37,14 @@ const chapterRows = computed(() => {
 })
 const filteredRows = computed(() => chapterRows.value.filter((row: any) =>
   row.script.name.toLowerCase().includes(search.value.trim().toLowerCase())))
-const visibleRows = computed(() => filteredRows.value.slice(page.value * pageSize, (page.value + 1) * pageSize))
-const pageCount = computed(() => Math.max(1, Math.ceil(filteredRows.value.length / pageSize)))
+const visibleRows = computed(() => filteredRows.value.slice(page.value * pageSize.value, (page.value + 1) * pageSize.value))
+const pageCount = computed(() => Math.max(1, Math.ceil(filteredRows.value.length / pageSize.value)))
 const selectedIds = computed(() => new Set<string>(activeNovel.value?.selectedChapterIds || []))
 const previewChapter = computed(() => previewIndex.value === -1 ? parsed.value?.intro : parsed.value?.chapters[previewIndex.value])
+const previewPageCount = computed(() => Math.max(1, Math.ceil((parsed.value?.chapters.length || 0) / previewPageSize.value)))
+const visiblePreviewChapters = computed(() => (parsed.value?.chapters || [])
+  .slice(previewPage.value * previewPageSize.value, (previewPage.value + 1) * previewPageSize.value)
+  .map((chapter, offset) => ({ chapter, index: previewPage.value * previewPageSize.value + offset })))
 const editorChapter = computed(() => workspace.scriptList.value.find(script => script.id === workspace.novelEditorId.value))
 const editorVoiceChoices = computed(() => workspace.characters.value.flatMap((character: any) => {
   const timbre = workspace.timbres.value.find(item => item.refPath === character.voiceFile)
@@ -53,7 +59,8 @@ const novelRoles = computed<string[]>(() => [...new Set<string>(chapterRows.valu
   (row.script.data.characters || []).map((character: any) => String(character.name || '').trim())).filter(Boolean))].sort())
 const batchRunning = computed(() => workspace.novelBatch.value.running)
 
-watch([search, activeNovelId], () => { page.value = 0 })
+watch([search, activeNovelId, pageSize], () => { page.value = 0 })
+watch(previewPageSize, () => { previewPage.value = 0; previewIndex.value = parsed.value?.intro ? -1 : 0 })
 watch(() => workspace.novels.value.map(novel => novel.id).join(','), () => {
   if (!workspace.novels.value.some(novel => novel.id === activeNovelId.value)) {
     activeNovelId.value = workspace.novels.value[0]?.id || ''
@@ -70,6 +77,7 @@ async function parseSelectedFile(nextFile: File, nextEncoding = 'auto') {
     parsed.value = result
     selectedIndexes.value = result.chapters.flatMap((chapter, index) => chapter.content.trim() ? [index] : [])
     includeIntro.value = false
+    previewPage.value = 0
     previewIndex.value = result.intro ? -1 : 0
   } catch (cause) {
     if (generation === parseGeneration) { parsed.value = null; error.value = String(cause) }
@@ -89,13 +97,28 @@ function onFileChange(event: Event) {
   void parseSelectedFile(nextFile)
 }
 function changeEncoding() { if (file.value) void parseSelectedFile(file.value, encoding.value) }
-function cancelPreview() {
-  if (importing.value) return
+function resetPreview() {
   parseGeneration++
   parsed.value = null
   file.value = null
   error.value = ''
   loading.value = false
+}
+function cancelPreview() {
+  if (importing.value) return
+  resetPreview()
+}
+function selectAllPreview() {
+  if (parsed.value) selectedIndexes.value = parsed.value.chapters.map((_, index) => index)
+}
+function invertPreviewSelection() {
+  if (!parsed.value) return
+  const current = new Set(selectedIndexes.value)
+  selectedIndexes.value = parsed.value.chapters.flatMap((_, index) => current.has(index) ? [] : [index])
+}
+function changePreviewPage(next: number) {
+  previewPage.value = Math.max(0, Math.min(previewPageCount.value - 1, next))
+  previewIndex.value = previewPage.value * previewPageSize.value
 }
 function togglePreviewIndex(index: number) {
   selectedIndexes.value = selectedIndexes.value.includes(index)
@@ -109,7 +132,7 @@ async function confirmImport() {
   try {
     const id = await workspace.commitNovelImport(file.value.name, parsed.value, selectedIndexes.value, includeIntro.value)
     activeNovelId.value = id
-    cancelPreview()
+    resetPreview()
   } catch (cause) { error.value = String(cause) }
   finally { importing.value = false }
 }
@@ -277,10 +300,17 @@ onBeforeUnmount(() => {
             </tbody>
           </table>
         </div>
-        <div class="mt-3 flex items-center justify-end gap-3 text-sm text-slate-500">
+        <div class="mt-3 flex flex-wrap items-center justify-between gap-3 text-sm text-slate-500">
+          <label class="flex items-center gap-2" for="novel-page-size">{{ t('novel.pageSize') }}
+            <select id="novel-page-size" v-model.number="pageSize" class="rounded-md border border-slate-300 bg-white px-2 py-1">
+              <option v-for="size in [20, 50, 100, 200]" :key="size" :value="size">{{ size }}</option>
+            </select>
+          </label>
+          <div class="flex items-center gap-3">
           <button type="button" :disabled="page === 0" class="disabled:opacity-40" @click="page--">{{ t('novel.previous') }}</button>
           <span>{{ page + 1 }} / {{ pageCount }}</span>
           <button type="button" :disabled="page + 1 >= pageCount" class="disabled:opacity-40" @click="page++">{{ t('novel.next') }}</button>
+          </div>
         </div>
       </div>
     </template>
@@ -306,13 +336,32 @@ onBeforeUnmount(() => {
           <p v-if="isEmptyNovel(parsed)" class="mx-5 mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">{{ t('novel.emptyFile') }}</p>
           <p v-else-if="parsed.chapters.length === 1 && parsed.chapters[0]?.title === '正文'" class="mx-5 mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">{{ t('novel.singleChapter') }}</p>
           <div class="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-hidden p-5 md:grid-cols-2">
-            <div class="min-h-0 overflow-auto rounded-lg border border-slate-200">
-              <div v-if="parsed.intro" class="flex items-center gap-2 border-b border-slate-100 p-3">
-                <input v-model="includeIntro" type="checkbox" :aria-label="t('novel.intro')"><button type="button" class="flex-1 text-left" @click="previewIndex = -1">{{ t('novel.intro') }} · {{ parsed.intro.content.length }} {{ t('novel.characters') }}</button>
+            <div class="flex min-h-0 flex-col rounded-lg border border-slate-200">
+              <div class="flex flex-wrap items-center gap-2 border-b border-slate-200 p-2 text-sm">
+                <button type="button" class="rounded-md border border-slate-300 px-2 py-1 text-blue-700" @click="selectAllPreview">{{ t('novel.selectAll') }}</button>
+                <button type="button" class="rounded-md border border-slate-300 px-2 py-1 text-blue-700" @click="invertPreviewSelection">{{ t('novel.invertSelection') }}</button>
+                <span class="text-slate-500">{{ t('novel.selectedCount') }} {{ selectedIndexes.length }}</span>
               </div>
-              <div v-for="(chapter, index) in parsed.chapters" :key="index" class="flex items-center gap-2 border-b border-slate-100 p-3" :class="previewIndex === index ? 'bg-blue-50' : ''">
-                <input type="checkbox" :checked="selectedIndexes.includes(index)" :aria-label="`${t('novel.select')} ${chapter.title}`" @change="togglePreviewIndex(index)">
-                <button type="button" class="flex-1 text-left" @click="previewIndex = index">{{ chapter.title }} <span class="text-slate-400">· {{ chapter.content.length }} {{ t('novel.characters') }}</span></button>
+              <div class="min-h-0 flex-1 overflow-auto">
+                <div v-if="parsed.intro" class="flex items-center gap-2 border-b border-slate-100 p-3">
+                  <input v-model="includeIntro" type="checkbox" :aria-label="t('novel.intro')"><button type="button" class="flex-1 text-left" @click="previewIndex = -1">{{ t('novel.intro') }} · {{ parsed.intro.content.length }} {{ t('novel.characters') }}</button>
+                </div>
+                <div v-for="row in visiblePreviewChapters" :key="row.index" class="flex items-center gap-2 border-b border-slate-100 p-3" :class="previewIndex === row.index ? 'bg-blue-50' : ''">
+                  <input type="checkbox" :checked="selectedIndexes.includes(row.index)" :aria-label="`${t('novel.select')} ${row.chapter.title}`" @change="togglePreviewIndex(row.index)">
+                  <button type="button" class="flex-1 text-left" @click="previewIndex = row.index">{{ row.chapter.title }} <span class="text-slate-400">· {{ row.chapter.content.length }} {{ t('novel.characters') }}</span></button>
+                </div>
+              </div>
+              <div class="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 p-2 text-sm text-slate-500">
+                <label class="flex items-center gap-1" for="novel-preview-page-size">{{ t('novel.pageSize') }}
+                  <select id="novel-preview-page-size" v-model.number="previewPageSize" class="rounded-md border border-slate-300 bg-white px-2 py-1">
+                    <option v-for="size in [20, 50, 100, 200]" :key="size" :value="size">{{ size }}</option>
+                  </select>
+                </label>
+                <div class="flex items-center gap-2">
+                  <button type="button" :disabled="previewPage === 0" class="disabled:opacity-40" @click="changePreviewPage(previewPage - 1)">{{ t('novel.previous') }}</button>
+                  <span>{{ previewPage + 1 }} / {{ previewPageCount }}</span>
+                  <button type="button" :disabled="previewPage + 1 >= previewPageCount" class="disabled:opacity-40" @click="changePreviewPage(previewPage + 1)">{{ t('novel.next') }}</button>
+                </div>
               </div>
             </div>
             <div class="min-h-0 overflow-auto rounded-lg border border-slate-200 p-4">
