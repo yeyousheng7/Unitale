@@ -2719,6 +2719,39 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       triggerAutoSave();
                   };
 
+                  const renameNovel = (novelId, title) => {
+                      if (hasActiveMediaTask() || novelEditorId.value) throw new Error(translateMessage('storage.busy'));
+                      const novel = novels.value.find(item => item.id === novelId);
+                      if (!novel) throw new Error('Novel not found');
+                      const nextTitle = String(title).trim();
+                      if (!nextTitle) throw new Error('Novel title cannot be empty');
+                      if (novel.title === nextTitle) return;
+                      novel.title = nextTitle;
+                      triggerAutoSave();
+                  };
+
+                  const deleteNovel = (novelId) => {
+                      if (hasActiveMediaTask() || novelEditorId.value) throw new Error(translateMessage('storage.busy'));
+                      const novel = novels.value.find(item => item.id === novelId);
+                      if (!novel) throw new Error('Novel not found');
+                      const chapterIds = new Set(novel.chapterIds);
+                      if (chapterIds.has(currentScriptId.value)) {
+                          const standalone = scriptList.value.find(script => script.kind !== 'novelChapter');
+                          if (!standalone) throw new Error('No standalone script available');
+                          switchScript(standalone.id);
+                      }
+                      for (const script of scriptList.value) {
+                          if (!chapterIds.has(script.id) || script.novelId !== novelId) continue;
+                          releaseScriptMedia(script);
+                          dirtyScriptIds.delete(script.id);
+                          deletedScriptIds.add(script.id);
+                      }
+                      scriptList.value = scriptList.value.filter(script => !chapterIds.has(script.id) || script.novelId !== novelId);
+                      novels.value = novels.value.filter(item => item.id !== novelId);
+                      collectOrphansAfterSave = true;
+                      triggerAutoSave();
+                  };
+
                   const setNovelRoleTimbre = (novelId, roleName, timbreId, overwrite = false) => {
                       if (hasActiveMediaTask()) throw new Error(translateMessage('storage.busy'));
                       const novel = novels.value.find(item => item.id === novelId);
@@ -4403,7 +4436,8 @@ Write the generated narration, dialogue, character names, and image_prompt value
                       lineRefs,
                       scriptListContainer,
                       scriptList, novels, currentScriptId, switchScript, addScript, deleteScriptTab,
-                      novelEditorId, novelBatch, commitNovelImport, setNovelSelection, setNovelRoleTimbre, navigateToTab,
+                      novelEditorId, novelBatch, commitNovelImport, setNovelSelection, renameNovel, deleteNovel,
+                      setNovelRoleTimbre, navigateToTab,
                       analyzeNovelBatch, generateNovelBatch, exportNovelBatch, stopNovelBatch, openNovelChapter, closeNovelChapter,
                       editingScriptId, startEditingScript, stopEditingScript, scriptNameInputRefs,
 

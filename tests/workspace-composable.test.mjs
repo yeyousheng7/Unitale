@@ -5,7 +5,8 @@ import { createRenderer, defineComponent, h, nextTick } from 'vue'
 import { createI18n, i18nKey } from '../src/i18n/index.ts'
 import { useUnitaleWorkspace } from '../src/composables/useUnitaleWorkspace.js'
 import { exportArchiveParts } from '../src/services/project/archive.ts'
-import { indexedDbAssetStore, loadWorkspaceProject, saveWorkspaceProject, setActiveProjectId, getActiveProjectId, openWorkspaceDB } from '../src/services/storage/workspaceDb.ts'
+import { collectOrphanAssets } from '../src/services/storage/garbageCollect.ts'
+import { indexedDbAssetStore, loadWorkspaceProject, loadWorkspaceScript, saveWorkspaceProject, setActiveProjectId, getActiveProjectId, openWorkspaceDB } from '../src/services/storage/workspaceDb.ts'
 
 const values = new Map()
 globalThis.localStorage = {
@@ -357,4 +358,45 @@ test('novel analysis retries failed chapters and saves book voices without switc
     assert.equal(stored.scriptList.find(item => item.id === chapterIds[0]).data.characters[0].voiceFile, '/server/lin.wav')
     assert.equal(stored.scriptList.find(item => item.id === chapterIds[1]).data.scriptLines.length, 0)
   } finally { globalThis.fetch = originalFetch; unmount() }
+})
+
+test('novel rename and deletion persist while retaining another novel and shared media', async () => {
+  const projectId = `novel-management-${Date.now()}`
+  await saveWorkspaceProject(snapshot(projectId), undefined, projectId)
+  await setActiveProjectId(projectId)
+  const exclusive = await indexedDbAssetStore.put(new Blob(['exclusive']), { projectId, kind: 'dialogue' })
+  const shared = await indexedDbAssetStore.put(new Blob(['shared']), { projectId, kind: 'dialogue' })
+  const { workspace: w, unmount } = mountWorkspace()
+  try {
+    await sleep(550)
+    const parsed = { encoding: 'utf-8', intro: null, chapters: [{ title: '第一章', content: '正文。' }] }
+    const firstId = await w.commitNovelImport('first.txt', parsed, [0], false)
+    const secondId = await w.commitNovelImport('second.txt', parsed, [0], false)
+    const firstChapter = w.novels.value.find(item => item.id === firstId).chapterIds[0]
+    const secondChapter = w.novels.value.find(item => item.id === secondId).chapterIds[0]
+    assert.equal(w.openNovelChapter(firstChapter), true)
+    w.scriptLines.value = [
+      { id: 'exclusive-line', type: 'dialogue', text: '甲', audioAssetId: exclusive.id, audioUrl: '' },
+      { id: 'shared-line', type: 'dialogue', text: '乙', audioAssetId: shared.id, audioUrl: '' },
+    ]
+    assert.throws(() => w.deleteNovel(firstId))
+    assert.equal(w.closeNovelChapter(), true)
+    assert.equal(w.openNovelChapter(secondChapter), true)
+    w.scriptLines.value = [{ id: 'other-line', type: 'dialogue', text: '丙', audioAssetId: shared.id, audioUrl: '' }]
+    assert.equal(w.closeNovelChapter(), true)
+    w.renameNovel(firstId, '  新书名  ')
+    await sleep(1150)
+    const renamed = await loadWorkspaceProject(projectId)
+    assert.equal(renamed.novels.find(item => item.id === firstId).title, '新书名')
+    assert.equal(renamed.novels.find(item => item.id === firstId).sourceFileName, 'first.txt')
+    w.deleteNovel(firstId)
+    await sleep(1150)
+    const stored = await loadWorkspaceProject(projectId)
+    assert.deepEqual(stored.novels.map(item => item.id), [secondId])
+    assert.deepEqual(stored.scriptList.map(item => item.id), ['default', secondChapter])
+    assert.equal(await loadWorkspaceScript(firstChapter, projectId), null)
+    await collectOrphanAssets(indexedDbAssetStore, projectId, stored, new Set(), Date.now() + 3 * 60 * 1000)
+    assert.equal(await indexedDbAssetStore.get(exclusive.id), null)
+    assert.ok(await indexedDbAssetStore.get(shared.id))
+  } finally { unmount() }
 })

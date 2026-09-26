@@ -25,6 +25,8 @@ let parseGeneration = 0
 
 const activeNovelId = ref('')
 const activeNovel = computed(() => workspace.novels.value.find(novel => novel.id === activeNovelId.value) || workspace.novels.value[0])
+const renamingNovelId = ref('')
+const novelTitleDraft = ref('')
 const search = ref('')
 const page = ref(0)
 const pageSize = ref(50)
@@ -143,6 +145,30 @@ function toggleChapter(id: string) {
   else next.add(id)
   workspace.setNovelSelection(activeNovel.value.id, [...next])
 }
+function startNovelRename() {
+  if (!activeNovel.value || batchRunning.value) return
+  renamingNovelId.value = activeNovel.value.id
+  novelTitleDraft.value = activeNovel.value.title
+}
+function cancelNovelRename() { renamingNovelId.value = ''; novelTitleDraft.value = '' }
+function saveNovelRename() {
+  if (!renamingNovelId.value) return
+  try {
+    workspace.renameNovel(renamingNovelId.value, novelTitleDraft.value)
+    cancelNovelRename()
+  } catch (cause) { error.value = String(cause) }
+}
+function deleteActiveNovel() {
+  const novel = activeNovel.value
+  if (!novel || batchRunning.value) return
+  if (!window.confirm(t('novel.deleteConfirm', { name: novel.title, count: novel.chapterIds.length }))) return
+  try {
+    workspace.deleteNovel(novel.id)
+    cancelNovelRename()
+    activeNovelId.value = workspace.novels.value[0]?.id || ''
+    error.value = ''
+  } catch (cause) { error.value = String(cause) }
+}
 async function runAnalysis(failedOnly = false, rerun = false) {
   if (!activeNovel.value) return
   if (rerun && !window.confirm(t('novel.rerunConfirm'))) return
@@ -210,14 +236,20 @@ onBeforeUnmount(() => {
     <template v-if="activeNovel">
       <div class="rounded-2xl border border-slate-200 bg-white p-5">
         <div class="flex flex-wrap items-center justify-between gap-4">
-          <div>
+          <div class="flex flex-wrap items-center gap-2">
             <label class="mr-3 text-sm text-slate-500" for="novel-select">{{ t('novel.currentNovel') }}</label>
-            <select id="novel-select" v-model="activeNovelId" class="rounded-lg border border-slate-300 bg-white px-3 py-2 font-semibold text-slate-800">
+            <input v-if="renamingNovelId === activeNovel.id" id="novel-select" v-model="novelTitleDraft" type="text" :aria-label="t('novel.rename')" class="rounded-lg border border-blue-400 bg-white px-3 py-2 font-semibold text-slate-800" @keydown.enter.stop.prevent="saveNovelRename" @keydown.esc.stop.prevent="cancelNovelRename" @blur="saveNovelRename">
+            <select v-else id="novel-select" v-model="activeNovelId" class="rounded-lg border border-slate-300 bg-white px-3 py-2 font-semibold text-slate-800">
               <option v-for="novel in workspace.novels.value" :key="novel.id" :value="novel.id">{{ novel.title }}</option>
             </select>
-            <span class="ml-3 text-sm text-slate-500">{{ activeNovel.chapterIds.length }} {{ t('novel.chapters') }} · {{ activeNovel.encoding }}</span>
+            <span class="text-sm text-slate-500">{{ activeNovel.chapterIds.length }} {{ t('novel.chapters') }} · {{ activeNovel.encoding }}</span>
           </div>
-          <button type="button" class="rounded-lg border border-slate-300 px-4 py-2 font-semibold text-blue-700 hover:bg-blue-50" @click="chooseFile">{{ t('novel.importAnother') }}</button>
+          <div class="flex flex-wrap items-center gap-2">
+            <button v-if="renamingNovelId === activeNovel.id" type="button" class="rounded-lg border border-slate-300 px-3 py-2 text-sm" @click="saveNovelRename">{{ t('novel.saveName') }}</button>
+            <button v-else type="button" :disabled="batchRunning" class="rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:opacity-40" @click="startNovelRename">{{ t('novel.rename') }}</button>
+            <button type="button" :disabled="batchRunning" class="rounded-lg border border-red-200 px-3 py-2 text-sm text-red-700 disabled:opacity-40" @click="deleteActiveNovel">{{ t('novel.delete') }}</button>
+            <button type="button" :disabled="batchRunning" class="rounded-lg border border-slate-300 px-4 py-2 font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-40" @click="chooseFile">{{ t('novel.importAnother') }}</button>
+          </div>
         </div>
         <p class="mt-3 text-sm text-slate-500">{{ activeNovel.sourceFileName }} · {{ t('novel.selectedCount') }} {{ activeNovel.selectedChapterIds.length }}</p>
       </div>
